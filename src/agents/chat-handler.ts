@@ -3,9 +3,58 @@ import { Context } from 'telegraf';
 import { Message, Update } from 'telegraf/types';
 import * as storage from '../services/storage.js';
 import { parseFoodEntry, formatMealTable, formatDailySummary, mealFromParsed } from '../services/nutrition.js';
+import { getQuoteForDay } from '../data/goggins-quotes.js';
 import type { OnboardingState, CaloriePhase, Book, User, UserProgram, DayLog } from '../db/schema.js';
 
 const anthropic = new Anthropic();
+
+// Goggins voice system prompt
+const GOGGINS_VOICE = `You ARE David Goggins. Not inspired by. Not mimicking. You speak as him in first person.
+
+HOW YOU TALK:
+- Short. Blunt. No fluff.
+- Don't explain yourself
+- Don't ask "how are you feeling?"
+- Don't use exclamation points constantly
+- Don't say "great job!" or "you got this!" or "amazing work!"
+- Do challenge. Do question. Do acknowledge earned respect.
+- No emojis except occasionally ✓
+
+SIGNATURE PHRASES (use sparingly, not every message):
+- "Stay hard."
+- "Roger that."
+- "GOOD."
+- "40% rule."
+- "Calloused mind."
+
+YOUR RHYTHM:
+- Rhetorical questions that sit with them
+- Statements that end conversations, not start them
+- Silence is fine. Don't fill space.
+- When you do talk, it lands.
+
+EXAMPLES OF GOOD RESPONSES:
+- User logs workout: "That's one." or "Roger that." or just update tracker silently
+- User logs both workouts: "Two workouts. Now handle your food."
+- User goes over calories: "You went over. You know what that means."
+- User completes day: "Day 14. Done." or "14 down. 61 to go."
+- User says they're tired: "So what? Do it tired." or "That's the 40% talking."
+
+WHAT YOU NEVER SAY:
+- "I'm proud of you!"
+- "You're doing amazing!"
+- "Don't be too hard on yourself"
+- "It's okay, tomorrow is a new day!"
+- "Remember to practice self-care"
+- "You've got this, champ!"
+- Long motivational paragraphs unprompted
+- Asking how they feel about things
+
+CONTEXT AWARENESS:
+- Day 3 vs Day 50 is different energy
+- First attempt vs third reset is different
+- Notice patterns (always late on workout 2, low protein)
+- Vary responses - don't always say the same thing`;
 
 type TextContext = Context<Update> & { message: Message.TextMessage };
 type PhotoContext = Context<Update> & { message: Message.PhotoMessage };
@@ -469,27 +518,25 @@ async function interpretMessage(message: string, user: User, program: UserProgra
   const baseCalories = program.baseCalories || program.bmr || 2000;
   const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
 
-  const systemPrompt = `You are an accountability partner for 75 Hard. The user is on Day ${user.currentDay}.
+  const systemPrompt = `${GOGGINS_VOICE}
 
-Their program:
-- Diet type: ${program.dietType || 'flexible'}
+CURRENT CONTEXT:
+- Day ${user.currentDay} of 75
 - Base calories: ${calorieInfo.base}
-- Calories burned today: ${calorieInfo.burned}
-- Today's calorie target: ${calorieInfo.total} (base + burned)
+- Burned today: ${calorieInfo.burned}
+- Calorie budget: ${calorieInfo.total}
 - Protein target: ${program.proteinTarget}g
 - Water target: ${program.waterTarget} oz
-- Outdoor workout type: ${program.workoutOutdoorType}
-- Indoor workout type: ${program.workoutIndoorType}
 
-Today's progress:
-- Workout 1 (outdoor): ${dayLog?.workout1?.done ? `✅ (${dayLog.workout1.calories_burned} cal burned)` : '❌'}
-- Workout 2: ${dayLog?.workout2?.done ? `✅ (${dayLog.workout2.calories_burned} cal burned)` : '❌'}
-- Reading: ${dayLog?.reading?.done ? '✅' : '❌'}
-- Water: ${dayLog?.water?.done ? '✅' : '❌'}
-- Progress pic: ${dayLog?.progressPic?.done ? '✅' : '❌'}
-- Calories consumed: ${dayLog?.diet?.calories_consumed || 0} / ${calorieInfo.total}
+TODAY'S STATUS:
+- Workout 1 (outdoor): ${dayLog?.workout1?.done ? `Done (${dayLog.workout1.calories_burned} cal)` : 'Not done'}
+- Workout 2: ${dayLog?.workout2?.done ? `Done (${dayLog.workout2.calories_burned} cal)` : 'Not done'}
+- Reading: ${dayLog?.reading?.done ? 'Done' : 'Not done'}
+- Water: ${dayLog?.water?.done ? 'Done' : 'Not done'}
+- Progress pic: ${dayLog?.progressPic?.done ? 'Done' : 'Not done'}
+- Calories: ${dayLog?.diet?.calories_consumed || 0} / ${calorieInfo.total}
 
-Determine the user's intent from their message. Respond with JSON only:
+Determine intent and respond AS GOGGINS. Return JSON:
 {
   "type": "log_workout" | "log_food" | "log_water" | "log_reading" | "log_progress_pic" | "status" | "conversation",
   "workout_number": 1 or 2 (if workout),
@@ -499,11 +546,8 @@ Determine the user's intent from their message. Respond with JSON only:
   "food_description": string (if food - the original description),
   "water_amount_oz": number (if water),
   "pages_read": number (if reading, default 10),
-  "response_text": "Your response to the user"
-}
-
-For conversation type, be supportive but real. If they're struggling, acknowledge it and encourage them without being preachy. The program is hard enough.
-${program.dietType ? `Remember their diet is ${program.dietType} - mention if food doesn't fit that.` : ''}`;
+  "response_text": "Your SHORT Goggins-style response"
+}`;
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
@@ -643,41 +687,37 @@ async function sendDailyStatus(ctx: Context, user: User, program: UserProgram): 
   const today = new Date().toISOString().split('T')[0];
   const dayLog = await storage.getOrCreateDayLog(user.id, user.currentDay, today);
 
-  // Dynamic calorie target
   const baseCalories = program.baseCalories || program.bmr || 2000;
   const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
-
   const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
 
-  const w1 = dayLog.workout1?.done
-    ? `✅ (${dayLog.workout1.calories_burned || 0} cal)`
-    : '⬜';
-  const w2 = dayLog.workout2?.done
-    ? `✅ (${dayLog.workout2.calories_burned || 0} cal)`
-    : '⬜';
-  const read = dayLog.reading?.done ? '✅' : '⬜';
-  const water = dayLog.water?.done ? '✅' : '⬜';
-  const pic = dayLog.progressPic?.done ? '✅' : '⬜';
-  const diet = status.calorieStatus === 'over' ? '❌' : (dayLog.diet?.calories_consumed || 0) > 0 ? '📊' : '⬜';
+  const w1 = dayLog.workout1?.done ? `✓ ${dayLog.workout1.calories_burned || 0}cal` : '—';
+  const w2 = dayLog.workout2?.done ? `✓ ${dayLog.workout2.calories_burned || 0}cal` : '—';
+  const read = dayLog.reading?.done ? '✓' : '—';
+  const water = dayLog.water?.done ? '✓' : '—';
+  const pic = dayLog.progressPic?.done ? '✓' : '—';
 
   const calsConsumed = dayLog.diet?.calories_consumed || 0;
 
-  let message = `**Day ${user.currentDay} of 75**\n\n`;
-  message += `${w1} Workout 1 (outdoor)\n`;
-  message += `${w2} Workout 2\n`;
-  message += `${read} Read 10 pages\n`;
-  message += `${water} Water (${dayLog.water?.amount_oz || 0}/${program.waterTarget} oz)\n`;
-  message += `${pic} Progress pic\n`;
-  message += `${diet} Diet (${calsConsumed}/${calorieInfo.total} cal)\n`;
-  message += `\n📊 **Calorie budget:** ${calorieInfo.base} base + ${calorieInfo.burned} burned`;
+  let message = `Day ${user.currentDay}.\n\n`;
+  message += `Workout 1: ${w1}\n`;
+  message += `Workout 2: ${w2}\n`;
+  message += `Reading: ${read}\n`;
+  message += `Water: ${water}\n`;
+  message += `Progress pic: ${pic}\n`;
+  message += `Calories: ${calsConsumed}/${calorieInfo.total}`;
 
-  if (status.complete) {
-    message += `\n\n🎉 **Day complete!** Great work.`;
-  } else if (status.missing.length > 0) {
-    message += `\n\n**Still need:** ${status.missing.join(', ')}`;
+  if (status.calorieStatus === 'over') {
+    message += ` — OVER`;
   }
 
-  await ctx.reply(message, { parse_mode: 'Markdown' });
+  if (status.complete) {
+    message += `\n\nDone.`;
+  } else if (status.missing.length > 0) {
+    message += `\n\n${status.missing.join('. ')}.`;
+  }
+
+  await ctx.reply(message);
 }
 
 async function checkDayCompletion(ctx: Context, user: User, program: UserProgram): Promise<void> {
@@ -685,7 +725,6 @@ async function checkDayCompletion(ctx: Context, user: User, program: UserProgram
   const dayLog = await storage.getDayLog(user.id, user.currentDay);
   if (!dayLog) return;
 
-  // Dynamic calorie target
   const baseCalories = program.baseCalories || program.bmr || 2000;
   const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
   const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
@@ -694,9 +733,10 @@ async function checkDayCompletion(ctx: Context, user: User, program: UserProgram
     await storage.markDayComplete(user.id, user.currentDay);
 
     if (user.currentDay === 75) {
-      await ctx.reply(`🏆 **YOU DID IT!** 75 Hard complete!\n\nIncredible discipline. You've proven to yourself what you're capable of.`);
+      await ctx.reply(`75 days.\n\nYou did what most people only talk about. You proved to yourself what you're capable of.\n\nStay hard.`);
     } else {
-      await ctx.reply(`✅ **Day ${user.currentDay} complete!**\n\nSee you tomorrow for Day ${user.currentDay + 1}.`);
+      const remaining = 75 - user.currentDay;
+      await ctx.reply(`Day ${user.currentDay}. Done.\n\n${remaining} to go.`);
     }
   }
 }
