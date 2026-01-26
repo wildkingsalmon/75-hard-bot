@@ -1,0 +1,35 @@
+{
+  "name": "75-hard-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "75 Hard accountability Telegram bot",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.45.1",
+    "node-cron": "^4.2.1",
+    "postgres": "^3.4.8",
+    "sharp": "^0.34.5",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "@types/node-cron": "^3.0.11",
+    "drizzle-kit": "^0.31.8",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
