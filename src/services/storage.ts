@@ -101,6 +101,22 @@ export function getCalorieTargetForDay(phases: CaloriePhase[], dayNumber: number
   return phase?.target_calories || phases[phases.length - 1]?.target_calories || 2000;
 }
 
+// Dynamic calorie target: base + workout calories burned
+export function getDynamicCalorieTarget(
+  baseCalories: number,
+  dayLog: DayLog | null
+): { base: number; burned: number; total: number } {
+  const workout1Burn = dayLog?.workout1?.calories_burned || 0;
+  const workout2Burn = dayLog?.workout2?.calories_burned || 0;
+  const totalBurned = workout1Burn + workout2Burn;
+
+  return {
+    base: baseCalories,
+    burned: totalBurned,
+    total: baseCalories + totalBurned
+  };
+}
+
 // Day log operations
 export async function getDayLog(userId: number, dayNumber: number): Promise<DayLog | null> {
   const result = await db

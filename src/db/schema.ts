@@ -20,6 +20,10 @@ export type WorkoutLog = {
   done: boolean;
   outdoor: boolean;
   duration_mins: number;
+  calories_burned: number;
+  hr_avg: number | null;
+  hr_max: number | null;
+  workout_type: string | null;
   notes: string | null;
   logged_at: string;
 };
@@ -90,6 +94,8 @@ export const userPrograms = pgTable('user_programs', {
   activityLevel: text('activity_level'), // sedentary, light, moderate, active, very_active
   bmr: integer('bmr'),
   tdee: integer('tdee'),
+  baseCalories: integer('base_calories'), // daily base before workout additions
+  dietType: text('diet_type'), // keto, paleo, high_protein, flexible, etc.
   caloriePhases: jsonb('calorie_phases').$type<CaloriePhase[]>().default([]),
   proteinTarget: integer('protein_target'), // grams
   waterTarget: integer('water_target'), // oz

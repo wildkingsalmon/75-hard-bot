@@ -17,7 +17,11 @@ export type ParsedFood = {
   totalFat: number;
 };
 
-export async function parseFoodEntry(userInput: string): Promise<ParsedFood> {
+export async function parseFoodEntry(userInput: string, dietType?: string): Promise<ParsedFood> {
+  const dietNote = dietType
+    ? `\nNote: User follows a ${dietType} diet. Add a brief warning if any items don't fit this diet.`
+    : '';
+
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 1024,
@@ -42,7 +46,8 @@ Respond ONLY with valid JSON in this exact format:
   "totalCalories": 0,
   "totalProtein": 0,
   "totalCarbs": 0,
-  "totalFat": 0
+  "totalFat": 0,
+  "dietWarning": null
 }
 
 Rules:
@@ -50,7 +55,7 @@ Rules:
 - Use realistic portion sizes if not specified
 - For restaurant food, estimate on the higher side
 - Include cooking oils/butter if mentioned or implied (like "fried")
-- Be specific in descriptions (e.g., "80/20 ground beef, 8oz cooked" not just "ground beef")`
+- Be specific in descriptions (e.g., "80/20 ground beef, 8oz cooked" not just "ground beef")${dietNote}`
       }
     ]
   });
@@ -109,30 +114,35 @@ export function formatMealTable(parsed: ParsedFood): string {
 export function formatDailySummary(
   meals: Meal[],
   calorieTarget: number,
-  proteinTarget: number
+  proteinTarget: number,
+  baseCalories?: number,
+  caloriesBurned?: number
 ): string {
   const totalCals = meals.reduce((sum, m) => sum + m.calories, 0);
   const totalProtein = meals.reduce((sum, m) => sum + m.protein, 0);
-  const totalCarbs = meals.reduce((sum, m) => sum + m.carbs, 0);
-  const totalFat = meals.reduce((sum, m) => sum + m.fat, 0);
 
   const remainingCals = calorieTarget - totalCals;
-  const remainingProtein = proteinTarget - totalProtein;
 
   const lines: string[] = [];
-  lines.push(`\n**Today:** ${totalCals} / ${calorieTarget} cal`);
+
+  // Show dynamic calorie breakdown if workout data exists
+  if (baseCalories && caloriesBurned !== undefined) {
+    lines.push(`\n**Budget:** ${baseCalories} base + ${caloriesBurned} burned = **${calorieTarget} cal**`);
+  }
+
+  lines.push(`**Consumed:** ${totalCals} / ${calorieTarget} cal`);
 
   if (remainingCals > 0) {
     lines.push(`**Remaining:** ${remainingCals} cal | Protein: ${totalProtein} / ${proteinTarget}g`);
   } else if (remainingCals === 0) {
-    lines.push(`**Status:** At calorie target | Protein: ${totalProtein} / ${proteinTarget}g`);
+    lines.push(`**Status:** At target | Protein: ${totalProtein} / ${proteinTarget}g`);
   } else {
     lines.push(`⚠️ **OVER by ${Math.abs(remainingCals)} cal** | Protein: ${totalProtein} / ${proteinTarget}g`);
   }
 
   // Warning if significantly under
   if (totalCals > 0 && totalCals < calorieTarget * 0.7) {
-    lines.push(`\n_Note: You're quite a bit under target. Make sure you're eating enough to sustain your workouts._`);
+    lines.push(`\n_You're quite a bit under target. Make sure you're eating enough to fuel your training._`);
   }
 
   return lines.join('\n');

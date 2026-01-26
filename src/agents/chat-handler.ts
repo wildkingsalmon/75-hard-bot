@@ -13,11 +13,12 @@ type PhotoContext = Context<Update> & { message: Message.PhotoMessage };
 // Onboarding steps
 const ONBOARDING_STEPS = [
   'welcome',
+  'gender',
   'height',
   'weight',
   'age',
-  'activity_level',
-  'calorie_phases',
+  'bmr_confirm',
+  'diet_type',
   'protein_target',
   'water_target',
   'first_book',
@@ -62,33 +63,36 @@ async function sendOnboardingMessage(ctx: Context, user: User, step: OnboardingS
   const state = user.onboardingState || { step, data: {} };
 
   const messages: Record<OnboardingStep, string> = {
-    welcome: `Hey! Ready to crush 75 Hard? Let's set up your program.\n\nFirst, what's your height? (e.g., "5'10" or "178 cm")`,
+    welcome: `Hey! Ready to crush 75 Hard? Let's set up your program.\n\nAre you male or female? (for accurate BMR calculation)`,
+
+    gender: `What's your height? (e.g., "5'10" or "178 cm")`,
 
     height: `Got it. What's your current weight? (e.g., "185 lbs" or "84 kg")`,
 
     weight: `Perfect. How old are you?`,
 
-    age: `And what's your activity level?\n\n` +
-      `1. Sedentary (desk job, little exercise)\n` +
-      `2. Light (light exercise 1-3 days/week)\n` +
-      `3. Moderate (moderate exercise 3-5 days/week)\n` +
-      `4. Active (hard exercise 6-7 days/week)\n` +
-      `5. Very Active (physical job + hard exercise)\n\n` +
-      `Just send the number.`,
-
-    activity_level: (() => {
-      const { bmr, tdee } = state.data as { bmr?: number; tdee?: number };
-      return `Based on your stats, your estimated:\n` +
-        `• BMR: ${bmr || '~2000'} cal/day\n` +
-        `• TDEE: ${tdee || '~2500'} cal/day\n\n` +
-        `Now let's set your calorie phases. You can have different targets for different parts of the 75 days.\n\n` +
-        `Example: "2920 for days 1-28, 2670 for days 29-49, 2420 for days 50-75"\n\n` +
-        `Or just send a single number like "2500" to use the same target throughout.`;
+    age: (() => {
+      const { bmr } = state.data as { bmr?: number };
+      return `Based on your stats, your BMR (base metabolic rate) is **${bmr || '~2000'} calories**.\n\n` +
+        `This is your base - the calories you burn just existing. Your workout calories get added on top.\n\n` +
+        `Example: ${bmr || 2000} base + 800 burned from workout = ${(bmr || 2000) + 800} cal budget for the day.\n\n` +
+        `Use this as your base? Or send a different number if you want to adjust.`;
     })(),
 
-    calorie_phases: `Great. What's your daily protein target in grams?\n\n` +
-      `Recommendation: 0.8-1g per pound of body weight. For someone at ${(state.data as { weight?: number }).weight || 180} lbs, that's ${Math.round(((state.data as { weight?: number }).weight || 180) * 0.9)}g.\n\n` +
-      `Send a number, or "auto" to use 1g per lb.`,
+    bmr_confirm: `What's your diet approach?\n\n` +
+      `• **Flexible** - just hit your macros\n` +
+      `• **High protein** - prioritize protein\n` +
+      `• **Keto** - low carb, high fat\n` +
+      `• **Paleo** - whole foods only\n` +
+      `• Or type your own`,
+
+    diet_type: (() => {
+      const weight = (state.data as { weight?: number }).weight || 180;
+      return `What's your daily protein target in grams?\n\n` +
+        `Recommendation: 0.8-1g per pound of body weight.\n` +
+        `For ${weight} lbs, that's ${Math.round(weight * 0.9)}g.\n\n` +
+        `Send a number, or "auto" to use 1g per lb.`;
+    })(),
 
     protein_target: `What's your daily water target in ounces?\n\n` +
       `The original 75 Hard requires a gallon (128 oz), but you can set your own goal.\n\n` +
@@ -111,16 +115,16 @@ async function sendOnboardingMessage(ctx: Context, user: User, step: OnboardingS
 
     alert_times: (() => {
       const data = state.data as Record<string, unknown>;
-      const phases = data.calorie_phases as CaloriePhase[] || [];
       const book = data.books as Book[] || [];
 
       return `Here's your 75 Hard program:\n\n` +
         `📊 **Stats**\n` +
         `• Height: ${data.height}\n` +
         `• Weight: ${data.weight} lbs\n` +
-        `• TDEE: ${data.tdee} cal\n\n` +
+        `• Base calories: ${data.base_calories} cal\n\n` +
         `🍽️ **Nutrition**\n` +
-        `• Calories: ${phases.map(p => `${p.target_calories} (Days ${p.start_day}-${p.end_day})`).join(', ')}\n` +
+        `• Diet: ${data.diet_type}\n` +
+        `• Daily budget: Base (${data.base_calories}) + workout burn\n` +
         `• Protein: ${data.protein_target}g\n` +
         `• Water: ${data.water_target} oz\n\n` +
         `📖 **Reading**: ${book[0]?.title || 'Not set'}\n\n` +
@@ -132,15 +136,15 @@ async function sendOnboardingMessage(ctx: Context, user: User, step: OnboardingS
         `Ready to start? Send "START" to begin Day 1!`;
     })(),
 
-    confirm: `You're all set! Day 1 starts now. Let's go! 💪\n\n` +
+    confirm: `You're all set! Day 1 starts now. Let's go!\n\n` +
       `**Today's Tasks:**\n` +
-      `- [ ] Workout 1 (45 min, outdoor)\n` +
-      `- [ ] Workout 2 (45 min, any)\n` +
-      `- [ ] Follow diet (at or under calorie target)\n` +
+      `- [ ] Workout 1 (45 min, outdoor) - upload Polar screenshot\n` +
+      `- [ ] Workout 2 (45 min, any) - upload Polar screenshot\n` +
+      `- [ ] Follow diet (base ${(state.data as Record<string, unknown>).base_calories || '~2000'} + workout burn)\n` +
       `- [ ] Water (hit your target)\n` +
       `- [ ] Read 10 pages\n` +
       `- [ ] Progress pic\n\n` +
-      `Just message me when you complete something, like "did my outdoor run" or "ate 2 eggs and toast".`
+      `Upload your Polar screenshots after workouts - I'll read the calories burned and add them to your daily budget.`
   };
 
   await storage.updateOnboardingState(user.telegramId, { step, data: state.data });
@@ -162,6 +166,21 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
 
   switch (currentStep) {
     case 'welcome':
+      // Parse gender
+      const genderLower = message.trim().toLowerCase();
+      if (genderLower === 'male' || genderLower === 'm' || genderLower === 'man') {
+        data.gender = 'male';
+        nextStep = 'gender';
+      } else if (genderLower === 'female' || genderLower === 'f' || genderLower === 'woman') {
+        data.gender = 'female';
+        nextStep = 'gender';
+      } else {
+        await ctx.reply(`Please say "male" or "female".`);
+        return;
+      }
+      break;
+
+    case 'gender':
       // Parse height
       const heightMatch = message.match(/(\d+)['\s]*(\d+)?|(\d+)\s*cm/i);
       if (heightMatch) {
@@ -199,10 +218,20 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
       break;
 
     case 'weight':
-      // Parse age
+      // Parse age and calculate BMR
       const age = parseInt(message);
       if (age > 0 && age < 120) {
         data.age = age;
+
+        // Calculate BMR (Mifflin-St Jeor)
+        const weightKg = (data.weight as number) / 2.205;
+        const heightCm = (data.height_inches as number) * 2.54;
+        const genderOffset = data.gender === 'male' ? 5 : -161;
+        const bmr = Math.round(10 * weightKg + 6.25 * heightCm - 5 * age + genderOffset);
+
+        data.bmr = bmr;
+        data.base_calories = bmr; // Default base to BMR
+
         nextStep = 'age';
       } else {
         await ctx.reply(`Please enter a valid age.`);
@@ -211,69 +240,41 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
       break;
 
     case 'age':
-      // Parse activity level
-      const activityMap: Record<string, { label: string; multiplier: number }> = {
-        '1': { label: 'sedentary', multiplier: 1.2 },
-        '2': { label: 'light', multiplier: 1.375 },
-        '3': { label: 'moderate', multiplier: 1.55 },
-        '4': { label: 'active', multiplier: 1.725 },
-        '5': { label: 'very_active', multiplier: 1.9 }
-      };
-      const activity = activityMap[message.trim()];
-      if (activity) {
-        data.activity_level = activity.label;
-
-        // Calculate BMR (Mifflin-St Jeor)
-        const weightKg = (data.weight as number) / 2.205;
-        const heightCm = (data.height_inches as number) * 2.54;
-        const bmr = Math.round(10 * weightKg + 6.25 * heightCm - 5 * (data.age as number) + 5);
-        const tdee = Math.round(bmr * activity.multiplier);
-
-        data.bmr = bmr;
-        data.tdee = tdee;
-
-        nextStep = 'activity_level';
+      // Confirm or adjust base calories
+      const lowerMsg = message.trim().toLowerCase();
+      if (lowerMsg === 'yes' || lowerMsg === 'y' || lowerMsg === 'ok' || lowerMsg === 'sure' || lowerMsg === 'use this') {
+        // Keep BMR as base
+        nextStep = 'bmr_confirm';
       } else {
-        await ctx.reply(`Please enter a number from 1-5.`);
-        return;
-      }
-      break;
-
-    case 'activity_level':
-      // Parse calorie phases
-      const phases: CaloriePhase[] = [];
-      const singleCal = message.match(/^(\d{3,4})$/);
-
-      if (singleCal) {
-        phases.push({
-          start_day: 1,
-          end_day: 75,
-          target_calories: parseInt(singleCal[1]),
-          label: 'target'
-        });
-      } else {
-        // Try to parse multiple phases
-        const phaseMatches = message.matchAll(/(\d{3,4})\s*(?:for|cal)?\s*(?:days?)?\s*(\d+)-(\d+)/gi);
-        for (const match of phaseMatches) {
-          phases.push({
-            start_day: parseInt(match[2]),
-            end_day: parseInt(match[3]),
-            target_calories: parseInt(match[1]),
-            label: `Days ${match[2]}-${match[3]}`
-          });
+        const customBase = parseInt(message);
+        if (customBase > 1000 && customBase < 5000) {
+          data.base_calories = customBase;
+          nextStep = 'bmr_confirm';
+        } else {
+          await ctx.reply(`Enter "yes" to use ${data.bmr} cal, or type a different number (e.g., "2200").`);
+          return;
         }
       }
-
-      if (phases.length > 0) {
-        data.calorie_phases = phases;
-        nextStep = 'calorie_phases';
-      } else {
-        await ctx.reply(`I didn't understand that. Try "2500" for a single target, or "2920 for days 1-28, 2670 for days 29-49" for phases.`);
-        return;
-      }
       break;
 
-    case 'calorie_phases':
+    case 'bmr_confirm':
+      // Parse diet type
+      const dietInput = message.trim().toLowerCase();
+      const dietMap: Record<string, string> = {
+        'flexible': 'flexible',
+        'high protein': 'high_protein',
+        'highprotein': 'high_protein',
+        'keto': 'keto',
+        'paleo': 'paleo',
+        'carnivore': 'carnivore',
+        'vegan': 'vegan',
+        'vegetarian': 'vegetarian',
+      };
+      data.diet_type = dietMap[dietInput] || dietInput;
+      nextStep = 'diet_type';
+      break;
+
+    case 'diet_type':
       // Parse protein target
       if (message.toLowerCase() === 'auto') {
         data.protein_target = Math.round((data.weight as number) * 1);
@@ -364,10 +365,9 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
           height: data.height_inches as number,
           weight: data.weight as number,
           age: data.age as number,
-          activityLevel: data.activity_level as string,
           bmr: data.bmr as number,
-          tdee: data.tdee as number,
-          caloriePhases: data.calorie_phases as CaloriePhase[],
+          baseCalories: data.base_calories as number,
+          dietType: data.diet_type as string,
           proteinTarget: data.protein_target as number,
           waterTarget: data.water_target as number,
           books: data.books as Book[],
@@ -465,24 +465,29 @@ async function interpretMessage(message: string, user: User, program: UserProgra
   const today = new Date().toISOString().split('T')[0];
   const dayLog = await storage.getDayLog(user.id, user.currentDay);
 
-  const calorieTarget = storage.getCalorieTargetForDay(program.caloriePhases || [], user.currentDay);
+  // Dynamic calorie target: base + workout burn
+  const baseCalories = program.baseCalories || program.bmr || 2000;
+  const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
 
   const systemPrompt = `You are an accountability partner for 75 Hard. The user is on Day ${user.currentDay}.
 
 Their program:
-- Calorie target: ${calorieTarget}
+- Diet type: ${program.dietType || 'flexible'}
+- Base calories: ${calorieInfo.base}
+- Calories burned today: ${calorieInfo.burned}
+- Today's calorie target: ${calorieInfo.total} (base + burned)
 - Protein target: ${program.proteinTarget}g
 - Water target: ${program.waterTarget} oz
 - Outdoor workout type: ${program.workoutOutdoorType}
 - Indoor workout type: ${program.workoutIndoorType}
 
 Today's progress:
-- Workout 1 (outdoor): ${dayLog?.workout1?.done ? '✅' : '❌'}
-- Workout 2: ${dayLog?.workout2?.done ? '✅' : '❌'}
+- Workout 1 (outdoor): ${dayLog?.workout1?.done ? `✅ (${dayLog.workout1.calories_burned} cal burned)` : '❌'}
+- Workout 2: ${dayLog?.workout2?.done ? `✅ (${dayLog.workout2.calories_burned} cal burned)` : '❌'}
 - Reading: ${dayLog?.reading?.done ? '✅' : '❌'}
 - Water: ${dayLog?.water?.done ? '✅' : '❌'}
 - Progress pic: ${dayLog?.progressPic?.done ? '✅' : '❌'}
-- Calories: ${dayLog?.diet?.calories_consumed || 0} / ${calorieTarget}
+- Calories consumed: ${dayLog?.diet?.calories_consumed || 0} / ${calorieInfo.total}
 
 Determine the user's intent from their message. Respond with JSON only:
 {
@@ -497,7 +502,8 @@ Determine the user's intent from their message. Respond with JSON only:
   "response_text": "Your response to the user"
 }
 
-For conversation type, be supportive but real. If they're struggling, acknowledge it and encourage them without being preachy. The program is hard enough.`;
+For conversation type, be supportive but real. If they're struggling, acknowledge it and encourage them without being preachy. The program is hard enough.
+${program.dietType ? `Remember their diet is ${program.dietType} - mention if food doesn't fit that.` : ''}`;
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
@@ -526,14 +532,20 @@ For conversation type, be supportive but real. If they're struggling, acknowledg
 async function processIntent(ctx: Context, user: User, program: UserProgram, intent: Intent): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
   const dayLog = await storage.getOrCreateDayLog(user.id, user.currentDay, today);
-  const calorieTarget = storage.getCalorieTargetForDay(program.caloriePhases || [], user.currentDay);
+  const baseCalories = program.baseCalories || program.bmr || 2000;
+  const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
 
   switch (intent.type) {
     case 'log_workout': {
+      // Text-based workout logging (without Polar screenshot)
       const workout = {
         done: true,
         outdoor: intent.is_outdoor || false,
         duration_mins: intent.duration_mins || 45,
+        calories_burned: 0, // No burn data without screenshot
+        hr_avg: null,
+        hr_max: null,
+        workout_type: null,
         notes: intent.notes || null,
         logged_at: new Date().toISOString()
       };
@@ -556,15 +568,20 @@ async function processIntent(ctx: Context, user: User, program: UserProgram, int
       }
 
       try {
-        const parsed = await parseFoodEntry(intent.food_description);
+        const parsed = await parseFoodEntry(intent.food_description, program.dietType || undefined);
         const meal = mealFromParsed(parsed, intent.food_description);
         const updatedLog = await storage.addMeal(user.id, user.currentDay, meal);
+
+        // Recalculate calorie target with updated log
+        const freshCalorieInfo = storage.getDynamicCalorieTarget(baseCalories, updatedLog);
 
         const tableText = formatMealTable(parsed);
         const summaryText = formatDailySummary(
           updatedLog?.meals || [],
-          calorieTarget,
-          program.proteinTarget || 150
+          freshCalorieInfo.total,
+          program.proteinTarget || 150,
+          freshCalorieInfo.base,
+          freshCalorieInfo.burned
         );
 
         await ctx.reply(tableText + summaryText, { parse_mode: 'Markdown' });
@@ -625,12 +642,19 @@ async function processIntent(ctx: Context, user: User, program: UserProgram, int
 async function sendDailyStatus(ctx: Context, user: User, program: UserProgram): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
   const dayLog = await storage.getOrCreateDayLog(user.id, user.currentDay, today);
-  const calorieTarget = storage.getCalorieTargetForDay(program.caloriePhases || [], user.currentDay);
 
-  const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieTarget);
+  // Dynamic calorie target
+  const baseCalories = program.baseCalories || program.bmr || 2000;
+  const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
 
-  const w1 = dayLog.workout1?.done ? '✅' : '⬜';
-  const w2 = dayLog.workout2?.done ? '✅' : '⬜';
+  const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
+
+  const w1 = dayLog.workout1?.done
+    ? `✅ (${dayLog.workout1.calories_burned || 0} cal)`
+    : '⬜';
+  const w2 = dayLog.workout2?.done
+    ? `✅ (${dayLog.workout2.calories_burned || 0} cal)`
+    : '⬜';
   const read = dayLog.reading?.done ? '✅' : '⬜';
   const water = dayLog.water?.done ? '✅' : '⬜';
   const pic = dayLog.progressPic?.done ? '✅' : '⬜';
@@ -644,12 +668,13 @@ async function sendDailyStatus(ctx: Context, user: User, program: UserProgram): 
   message += `${read} Read 10 pages\n`;
   message += `${water} Water (${dayLog.water?.amount_oz || 0}/${program.waterTarget} oz)\n`;
   message += `${pic} Progress pic\n`;
-  message += `${diet} Diet (${calsConsumed}/${calorieTarget} cal)\n`;
+  message += `${diet} Diet (${calsConsumed}/${calorieInfo.total} cal)\n`;
+  message += `\n📊 **Calorie budget:** ${calorieInfo.base} base + ${calorieInfo.burned} burned`;
 
   if (status.complete) {
-    message += `\n🎉 **Day complete!** Great work.`;
+    message += `\n\n🎉 **Day complete!** Great work.`;
   } else if (status.missing.length > 0) {
-    message += `\n**Still need:** ${status.missing.join(', ')}`;
+    message += `\n\n**Still need:** ${status.missing.join(', ')}`;
   }
 
   await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -660,8 +685,10 @@ async function checkDayCompletion(ctx: Context, user: User, program: UserProgram
   const dayLog = await storage.getDayLog(user.id, user.currentDay);
   if (!dayLog) return;
 
-  const calorieTarget = storage.getCalorieTargetForDay(program.caloriePhases || [], user.currentDay);
-  const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieTarget);
+  // Dynamic calorie target
+  const baseCalories = program.baseCalories || program.bmr || 2000;
+  const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
+  const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
 
   if (status.complete && !dayLog.completed) {
     await storage.markDayComplete(user.id, user.currentDay);
@@ -694,15 +721,169 @@ export async function handlePhoto(ctx: PhotoContext): Promise<void> {
   const today = new Date().toISOString().split('T')[0];
   await storage.getOrCreateDayLog(user.id, user.currentDay, today);
 
-  // Save progress pic
-  await storage.logProgressPic(user.id, user.currentDay, {
-    done: true,
-    file_id: fileId,
-    logged_at: new Date().toISOString()
+  // Download the image to analyze it
+  try {
+    const file = await ctx.telegram.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${ctx.telegram.token}/${file.file_path}`;
+
+    const response = await fetch(fileUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    const base64Image = Buffer.from(arrayBuffer).toString('base64');
+    const mediaType = file.file_path?.endsWith('.png') ? 'image/png' : 'image/jpeg';
+
+    // Use Claude to analyze the image
+    const analysis = await analyzeImage(base64Image, mediaType);
+
+    if (analysis.type === 'workout_screenshot') {
+      // It's a Polar/workout screenshot - log the workout
+      await handleWorkoutScreenshot(ctx, user, program, analysis, fileId);
+    } else {
+      // It's a progress pic
+      await storage.logProgressPic(user.id, user.currentDay, {
+        done: true,
+        file_id: fileId,
+        logged_at: new Date().toISOString()
+      });
+      await storage.saveProgressPic(user.id, user.currentDay, fileId);
+      await ctx.reply(`📸 Progress pic logged for Day ${user.currentDay}!`);
+      await checkDayCompletion(ctx, user, program);
+    }
+  } catch (error) {
+    console.error('Photo handling error:', error);
+    // Fallback: treat as progress pic
+    await storage.logProgressPic(user.id, user.currentDay, {
+      done: true,
+      file_id: fileId,
+      logged_at: new Date().toISOString()
+    });
+    await storage.saveProgressPic(user.id, user.currentDay, fileId);
+    await ctx.reply(`📸 Progress pic logged for Day ${user.currentDay}!`);
+    await checkDayCompletion(ctx, user, program);
+  }
+}
+
+type ImageAnalysis = {
+  type: 'workout_screenshot' | 'progress_pic';
+  duration_mins?: number;
+  calories_burned?: number;
+  hr_avg?: number;
+  hr_max?: number;
+  hr_min?: number;
+  workout_type?: string;
+};
+
+async function analyzeImage(base64Image: string, mediaType: string): Promise<ImageAnalysis> {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [{
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+            data: base64Image
+          }
+        },
+        {
+          type: 'text',
+          text: `Analyze this image. Is it:
+1. A workout/fitness tracker screenshot (like Polar, Garmin, Apple Watch, etc.) showing workout data
+2. A progress photo (selfie, mirror pic, body photo)
+
+If it's a workout screenshot, extract:
+- Duration (in minutes)
+- Calories burned
+- Average heart rate
+- Max heart rate
+- Workout type if visible
+
+Respond with JSON only:
+{
+  "type": "workout_screenshot" or "progress_pic",
+  "duration_mins": number or null,
+  "calories_burned": number or null,
+  "hr_avg": number or null,
+  "hr_max": number or null,
+  "workout_type": string or null
+}`
+        }
+      ]
+    }]
   });
 
-  await storage.saveProgressPic(user.id, user.currentDay, fileId);
+  const content = response.content[0];
+  if (content.type !== 'text') {
+    return { type: 'progress_pic' };
+  }
 
-  await ctx.reply(`📸 Progress pic logged for Day ${user.currentDay}!`);
+  try {
+    let jsonStr = content.text;
+    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1];
+    }
+    return JSON.parse(jsonStr) as ImageAnalysis;
+  } catch {
+    return { type: 'progress_pic' };
+  }
+}
+
+async function handleWorkoutScreenshot(
+  ctx: PhotoContext,
+  user: User,
+  program: UserProgram,
+  analysis: ImageAnalysis,
+  fileId: string
+): Promise<void> {
+  const dayLog = await storage.getDayLog(user.id, user.currentDay);
+
+  // Determine which workout this is (1 or 2)
+  const isWorkout1Done = dayLog?.workout1?.done;
+  const workoutNumber = isWorkout1Done ? 2 : 1;
+
+  // For workout 1, check if duration meets 45 min outdoor requirement
+  const duration = analysis.duration_mins || 45;
+  const calories = analysis.calories_burned || 0;
+
+  const workout = {
+    done: true,
+    outdoor: workoutNumber === 1, // Workout 1 must be outdoor
+    duration_mins: duration,
+    calories_burned: calories,
+    hr_avg: analysis.hr_avg || null,
+    hr_max: analysis.hr_max || null,
+    workout_type: analysis.workout_type || null,
+    notes: null,
+    logged_at: new Date().toISOString()
+  };
+
+  if (workoutNumber === 1) {
+    await storage.logWorkout1(user.id, user.currentDay, workout);
+  } else {
+    await storage.logWorkout2(user.id, user.currentDay, workout);
+  }
+
+  // Calculate today's calorie budget
+  const updatedDayLog = await storage.getDayLog(user.id, user.currentDay);
+  const totalBurned = (updatedDayLog?.workout1?.calories_burned || 0) + (updatedDayLog?.workout2?.calories_burned || 0);
+  const baseCalories = program.baseCalories || program.bmr || 2000;
+  const todayTarget = baseCalories + totalBurned;
+
+  const consumed = updatedDayLog?.diet?.calories_consumed || 0;
+  const remaining = todayTarget - consumed;
+
+  let message = `🏋️ **Workout ${workoutNumber} logged!**\n\n`;
+  message += `⏱ Duration: ${duration} min\n`;
+  message += `🔥 Calories burned: ${calories}\n`;
+  if (analysis.hr_avg) message += `❤️ Avg HR: ${analysis.hr_avg} bpm\n`;
+  if (analysis.hr_max) message += `❤️ Max HR: ${analysis.hr_max} bpm\n`;
+  message += `\n**Today's calorie budget:**\n`;
+  message += `Base: ${baseCalories} + Burned: ${totalBurned} = **${todayTarget} cal**\n`;
+  message += `Consumed: ${consumed} | Remaining: ${remaining}`;
+
+  await ctx.reply(message, { parse_mode: 'Markdown' });
   await checkDayCompletion(ctx, user, program);
 }
