@@ -1,9 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { eq } from 'drizzle-orm';
 import { db, dayLogs } from '../db/index.js';
+import { createMessage } from '../services/ai.js';
 import type { User, UserProgram, DayLog } from '../db/schema.js';
-
-const anthropic = new Anthropic();
 
 export async function generateProgressReport(user: User, program: UserProgram): Promise<string> {
   // Get all day logs for this user
@@ -21,8 +19,7 @@ export async function generateProgressReport(user: User, program: UserProgram): 
   const stats = compileStats(logs, program);
 
   // Use Claude for analysis
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+  const response = await createMessage('analytics', {
     max_tokens: 2048,
     messages: [{
       role: 'user',
