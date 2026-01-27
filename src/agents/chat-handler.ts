@@ -771,9 +771,19 @@ async function interpretMessage(message: string, user: User, program: UserProgra
     : 'None set';
   const whyStr = context.why || 'Not shared yet';
 
+  // Get current time in user's timezone
+  const userTime = new Date().toLocaleString('en-US', {
+    timeZone: user.timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    weekday: 'long'
+  });
+
   const systemPrompt = `${GOGGINS_VOICE}
 
 CURRENT CONTEXT:
+- Current time: ${userTime} (${user.timezone})
 - Day ${user.currentDay} of 75
 - Diet: ${program.dietType || 'Not set'}
 - Diet mode: ${program.dietMode || 'confirm'}
