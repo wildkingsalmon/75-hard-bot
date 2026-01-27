@@ -97,9 +97,11 @@ export async function midnightCheck(bot: Telegraf): Promise<void> {
       const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined);
 
       if (!status.complete) {
+        // Interactive check-in instead of just a warning
+        const missingStr = status.missing.join(', ');
         await bot.telegram.sendMessage(
           user.telegramId,
-          `Day ${user.currentDay} incomplete.\n\n5am. You know what happens.`
+          `It's midnight. Day ${user.currentDay}.\n\nStill missing: ${missingStr}\n\nYou still knocking these out before bed? Or did today not happen?`
         );
       }
     } catch (error) {

@@ -19,14 +19,16 @@ export async function checkDayResets(bot: Telegraf): Promise<void> {
 
       const dayLog = await storage.getDayLog(user.id, user.currentDay);
       if (!dayLog) {
-        await handleReset(bot, user, program, ['No activity logged']);
+        // No activity logged - ask them to confirm failure
+        await askForFailureConfirmation(bot, user, ['No activity logged']);
         continue;
       }
 
       const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined);
 
       if (!status.complete) {
-        await handleReset(bot, user, program, status.missing);
+        // Day incomplete - ask them to confirm (no auto-reset)
+        await askForFailureConfirmation(bot, user, status.missing);
       } else {
         await handleDayAdvance(bot, user, program);
       }
@@ -36,32 +38,20 @@ export async function checkDayResets(bot: Telegraf): Promise<void> {
   }
 }
 
-async function handleReset(
+async function askForFailureConfirmation(
   bot: Telegraf,
   user: storage.User,
-  program: storage.UserProgram,
   missing: string[]
 ): Promise<void> {
-  const previousDay = user.currentDay;
+  const missingStr = missing.join(', ');
 
-  await storage.resetUserToDay1(user.id);
-
-  const today = new Date().toISOString().split('T')[0];
-  await storage.getOrCreateDayLog(user.id, 1, today);
-
-  // Goggins-style reset messages - varies by how far they got
+  // Ask for confirmation instead of auto-resetting
   let message: string;
 
-  if (previousDay === 1) {
-    message = `Day 1. Incomplete.\n\nYou're still at the starting line. That's fine. Most people never even get here.\n\nGo again.`;
-  } else if (previousDay < 10) {
-    message = `Day ${previousDay}. Gone.\n\nBack to Day 1. Most people quit right here. They tell themselves they'll start again Monday.\n\nProve you're not most people.`;
-  } else if (previousDay < 30) {
-    message = `${previousDay} days. Gone.\n\nThat stings. Good. Remember this feeling next time you think about cutting corners.\n\nDay 1.`;
-  } else if (previousDay < 50) {
-    message = `${previousDay} days. All of it. Gone.\n\nYou were building something. Now you get to find out if you actually want it.\n\nDay 1. Again.`;
+  if (user.currentDay === 1) {
+    message = `5am. Day 1 incomplete.\n\nMissing: ${missingStr}\n\nDid you finish after midnight, or did Day 1 not happen? Tell me.`;
   } else {
-    message = `${previousDay} days.\n\nYou were close. That's gonna hurt for a while. Let it.\n\nThe question now is simple: are you done, or are you just getting started?\n\nDay 1.`;
+    message = `5am. Day ${user.currentDay} incomplete.\n\nMissing: ${missingStr}\n\nDid you get it done after midnight? Or do we need to talk about starting over?`;
   }
 
   await bot.telegram.sendMessage(user.telegramId, message);

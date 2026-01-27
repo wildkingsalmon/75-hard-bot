@@ -6,6 +6,19 @@ import { parseFoodEntry, formatMealTable, formatDailySummarySimple, mealFromPars
 import { getQuoteForDay } from '../data/goggins-quotes.js';
 import type { OnboardingState, Book, User, UserProgram, DayLog, UserGoal, UserNote } from '../db/schema.js';
 
+// Store pending reset confirmations (userId -> { reason, askedAt })
+const pendingResets: Map<number, { reason: string; askedAt: Date }> = new Map();
+
+// Check if user has pending reset confirmation
+export function hasPendingReset(userId: number): boolean {
+  return pendingResets.has(userId);
+}
+
+// Clear pending reset (used by cron jobs if needed)
+export function clearPendingReset(userId: number): void {
+  pendingResets.delete(userId);
+}
+
 const anthropic = new Anthropic();
 
 // Parse workout screenshot to extract calories burned
@@ -269,8 +282,17 @@ const ONBOARDING_STEPS = [
   'water_target',   // Ask water
   'first_book',     // Ask book
   'alert_times',    // Ask alert times
+  'timezone',       // Ask timezone
   'confirm'         // Show summary, wait for STAY HARD
 ] as const;
+
+// Common US timezones
+const TIMEZONE_OPTIONS: Record<string, string> = {
+  '1': 'America/New_York',    // Eastern
+  '2': 'America/Chicago',     // Central
+  '3': 'America/Denver',      // Mountain
+  '4': 'America/Los_Angeles', // Pacific
+};
 
 type OnboardingStep = typeof ONBOARDING_STEPS[number];
 
@@ -344,10 +366,24 @@ Reply 1, 2, or 3.`,
 
     first_book: `When should I alert you if your day isn't done? Default is 7pm, 8pm, 9pm, 10pm. Say "default" or send your own times.`,
 
-    alert_times: (() => {
+    alert_times: `What timezone are you in?
+
+**1** - Eastern
+**2** - Central
+**3** - Mountain
+**4** - Pacific
+
+Reply 1, 2, 3, or 4.`,
+
+    timezone: (() => {
       const d = state.data as Record<string, unknown>;
       const book = d.books as Book[] || [];
       const mode = d.diet_mode as string;
+      const tz = d.timezone as string;
+      const tzLabel = tz === 'America/New_York' ? 'Eastern' :
+                      tz === 'America/Chicago' ? 'Central' :
+                      tz === 'America/Denver' ? 'Mountain' :
+                      tz === 'America/Los_Angeles' ? 'Pacific' : tz;
 
       let dietInfo = `${d.diet_type}`;
       if (mode === 'confirm') {
@@ -365,7 +401,8 @@ Reply 1, 2, or 3.`,
         `Diet: ${dietInfo}\n` +
         `Water: ${d.water_target} oz\n` +
         `Book: ${book[0]?.title || 'Not set'}\n` +
-        `Alerts: ${(d.alert_times as string[])?.length ? formatAlertTimes(d.alert_times as string[]) : '7pm, 8pm, 9pm, 10pm'}\n\n` +
+        `Alerts: ${(d.alert_times as string[])?.length ? formatAlertTimes(d.alert_times as string[]) : '7pm, 8pm, 9pm, 10pm'}\n` +
+        `Timezone: ${tzLabel}\n\n` +
         `**Daily:**\n` +
         `• Outdoor workout (45+ min)\n` +
         `• Indoor workout (45+ min)\n` +
@@ -539,7 +576,19 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
       nextStep = 'alert_times';
       break;
 
-    case 'alert_times':
+    case 'alert_times': {
+      const tzInput = message.trim();
+      const timezone = TIMEZONE_OPTIONS[tzInput];
+      if (!timezone) {
+        await ctx.reply(`Reply 1, 2, 3, or 4.`);
+        return;
+      }
+      data.timezone = timezone;
+      nextStep = 'timezone';
+      break;
+    }
+
+    case 'timezone':
       if (message.toLowerCase() === 'stay hard' || message.toLowerCase() === 'start') {
         // Save program and complete onboarding
         await storage.updateUserProgram(user.id, {
@@ -553,6 +602,11 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
           waterTarget: data.water_target as number,
           books: data.books as Book[],
           alertTimes: data.alert_times as string[]
+        });
+
+        // Save timezone to user record
+        await storage.updateUser(user.telegramId, {
+          timezone: data.timezone as string
         });
 
         const today = new Date().toISOString().split('T')[0];
@@ -620,8 +674,32 @@ export async function handleMessage(ctx: TextContext | Context, message: string)
   }
 
   if (message === '/progress') {
-    await ctx.reply(`You're on Day ${user.currentDay} of 75. Keep going!`);
+    // Handled in telegram.ts with full bot access for progress grid
     return;
+  }
+
+  if (message === '/timezone') {
+    await ctx.reply(`Current timezone: ${user.timezone}
+
+Update it:
+**1** - Eastern
+**2** - Central
+**3** - Mountain
+**4** - Pacific
+
+Reply with the number.`);
+    return;
+  }
+
+  // Handle timezone selection (1-4) if user just used /timezone
+  if (['1', '2', '3', '4'].includes(message.trim())) {
+    const timezone = TIMEZONE_OPTIONS[message.trim()];
+    if (timezone) {
+      await storage.updateUser(user.telegramId, { timezone });
+      const label = message === '1' ? 'Eastern' : message === '2' ? 'Central' : message === '3' ? 'Mountain' : 'Pacific';
+      await ctx.reply(`Timezone updated to ${label}.`);
+      return;
+    }
   }
 
   // Use Claude to understand intent
@@ -630,7 +708,7 @@ export async function handleMessage(ctx: TextContext | Context, message: string)
 }
 
 type Intent = {
-  type: 'log_items' | 'status' | 'conversation' | 'unknown';
+  type: 'log_items' | 'status' | 'conversation' | 'unknown' | 'admit_failure' | 'confirm_reset' | 'cancel_reset';
   // Multiple items can be logged at once
   log_outdoor_workout?: boolean;
   log_indoor_workout?: boolean;
@@ -655,6 +733,8 @@ type Intent = {
   edit_last_meal?: boolean;
   corrected_food_description?: string; // for "actually it was X not Y"
   delete_water?: number; // oz to remove
+  // Failure/reset intents
+  failure_reason?: string; // What rule they broke
   // Context extraction - goals/notes learned from conversation
   extracted_context?: {
     goal?: { type: string; description: string };
@@ -709,9 +789,21 @@ INSTRUCTIONS:
    - If they DO provide details (e.g., "45 min run" or "burned 400 calories"), estimate or use the calories and set workout_calories
    - Keep probing until you have enough info to estimate calories burned
 
+FAILURE DETECTION:
+If the user admits to breaking a 75 Hard rule, use type "admit_failure". This includes:
+- "I failed", "I messed up", "I broke my diet", "I didn't complete everything"
+- "I skipped my workout", "I missed my reading", "I didn't take a progress pic"
+- "I drank alcohol", "I had a cheat meal", "I ate off my diet"
+- "I didn't finish yesterday", "I didn't get everything done"
+- Any admission that they broke the rules of 75 Hard
+
+RESET CONFIRMATION:
+- If user says "RESET", "reset", "start over", "wipe it", "yes reset" -> type "confirm_reset"
+- If user says "nevermind", "cancel", "no", "wait", "still going", "not yet" -> type "cancel_reset"
+
 Return JSON:
 {
-  "type": "log_items" | "status" | "conversation",
+  "type": "log_items" | "status" | "conversation" | "admit_failure" | "confirm_reset" | "cancel_reset",
   "log_outdoor_workout": true/false (if they mention outdoor workout),
   "log_indoor_workout": true/false (if they mention indoor workout),
   "log_progress_pic": true/false (if they mention progress pic),
@@ -732,6 +824,7 @@ Return JSON:
   "edit_last_meal": true/false (for corrections like "actually it was 2 eggs not 4"),
   "corrected_food_description": string (the corrected food when edit_last_meal is true),
   "delete_water": number (oz to remove, for "remove 20oz water", "I didn't drink that water"),
+  "failure_reason": string (if admit_failure - what rule they broke),
   "response_text": "Your SHORT Goggins-style response",
   "extracted_context": {
     "goal": { "type": "weight|fitness|habit|other", "description": "..." } (if they mention a goal),
@@ -744,6 +837,7 @@ Return JSON:
 Use type "log_items" whenever the user is logging ANY activity. Set the appropriate log_* fields to true.
 "confirm_diet" = true when user says things like "followed my diet", "stuck to my diet", "ate clean", etc.
 For edits/deletes: "delete last meal" -> delete_last_meal=true. "delete last 3 meals" -> delete_last_meal=true, meals_to_delete=3. "actually it was 2 eggs not 4" -> edit_last_meal=true, corrected_food_description="2 eggs". "remove 20oz water" -> delete_water=20.
+Use type "admit_failure" when user admits breaking ANY 75 Hard rule - be sensitive to this, it's important.
 Only include extracted_context fields if the user actually mentions something new to remember.`;
 
   const response = await anthropic.messages.create({
@@ -800,6 +894,11 @@ async function processIntent(ctx: Context, user: User, program: UserProgram, int
 
   switch (intent.type) {
     case 'log_items': {
+      // If user logs items after admitting failure, they're clearly still going - clear pending reset
+      if (pendingResets.has(user.id)) {
+        pendingResets.delete(user.id);
+      }
+
       // Handle multiple logged items at once
       if (intent.log_outdoor_workout) {
         await storage.logOutdoorWorkout(user.id, user.currentDay, {
@@ -908,6 +1007,93 @@ async function processIntent(ctx: Context, user: User, program: UserProgram, int
 
     case 'status': {
       await sendDailyStatus(ctx, user, program);
+      break;
+    }
+
+    case 'admit_failure': {
+      // User admitted to breaking a rule - start reset confirmation flow
+      const previousDay = user.currentDay;
+      const reason = intent.failure_reason || 'broke a rule';
+
+      // Store pending reset
+      pendingResets.set(user.id, { reason, askedAt: new Date() });
+
+      // Build message based on how far they got
+      let message: string;
+      if (previousDay === 1) {
+        message = `Day 1. ${reason}.\n\nThat's the deal. One slip, back to zero.`;
+      } else if (previousDay < 10) {
+        message = `Day ${previousDay}. ${reason}.\n\nYou knew the rules.`;
+      } else if (previousDay < 30) {
+        message = `${previousDay} days. ${reason}.\n\nThat stings. Good. Remember this.`;
+      } else if (previousDay < 50) {
+        message = `${previousDay} days gone. ${reason}.\n\nYou were building something real.`;
+      } else {
+        message = `${previousDay} days. ${reason}.\n\nYou were close. Let that burn.`;
+      }
+
+      // Mention progress pics if they have any
+      const pics = await storage.getProgressPics(user.id);
+      if (pics.length > 0) {
+        message += `\n\nYou've got ${pics.length} progress pic${pics.length > 1 ? 's' : ''} from this run. Send /progress to see them before you wipe.`;
+      }
+
+      message += `\n\nSay **RESET** to wipe everything and start Day 1 fresh. Or tell me you're still going.`;
+
+      await ctx.reply(message, { parse_mode: 'Markdown' });
+      break;
+    }
+
+    case 'confirm_reset': {
+      // Check if they have a pending reset
+      const pending = pendingResets.get(user.id);
+      if (!pending) {
+        await ctx.reply("You haven't told me you failed. What's going on?");
+        break;
+      }
+
+      const previousDay = user.currentDay;
+
+      // Clear all user data (day_logs, progress_pics)
+      await storage.clearUserData(user.id);
+
+      // Reset to Day 1
+      await storage.resetUserToDay1(user.id);
+
+      // Create fresh Day 1 log
+      const today = new Date().toISOString().split('T')[0];
+      await storage.getOrCreateDayLog(user.id, 1, today);
+
+      // Clear pending reset
+      pendingResets.delete(user.id);
+
+      // Goggins reset message
+      let message: string;
+      if (previousDay === 1) {
+        message = `Wiped. Day 1.\n\nYou're still at the starting line. That's fine. Most people never even get here.\n\nGo again.`;
+      } else if (previousDay < 10) {
+        message = `Gone. All of it.\n\nDay 1. Most people quit right here. They tell themselves they'll start again Monday.\n\nProve you're not most people.`;
+      } else if (previousDay < 30) {
+        message = `${previousDay} days. Gone.\n\nRemember this feeling next time you think about cutting corners.\n\nDay 1. Let's go.`;
+      } else if (previousDay < 50) {
+        message = `${previousDay} days. Wiped.\n\nYou were building something. Now you get to find out if you actually want it.\n\nDay 1. Again.`;
+      } else {
+        message = `${previousDay} days gone.\n\nYou were close. That's gonna hurt for a while. Let it.\n\nThe question now is simple: are you done, or are you just getting started?\n\nDay 1.`;
+      }
+
+      await ctx.reply(message);
+      break;
+    }
+
+    case 'cancel_reset': {
+      // User said they're still going or cancelled
+      const pending = pendingResets.get(user.id);
+      if (pending) {
+        pendingResets.delete(user.id);
+        await ctx.reply("Alright. Handle your business. The day's not over yet.");
+      } else {
+        await ctx.reply(intent.response_text);
+      }
       break;
     }
 

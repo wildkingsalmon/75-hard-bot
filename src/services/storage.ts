@@ -433,6 +433,15 @@ export async function getAllActiveUsers(): Promise<User[]> {
     .where(eq(users.onboardingComplete, true));
 }
 
+// Clear all user data for reset - wipes day_logs and progress_pics
+export async function clearUserData(userId: number): Promise<void> {
+  // Delete all day logs for this user
+  await db.delete(dayLogs).where(eq(dayLogs.userId, userId));
+
+  // Delete all progress pics for this user
+  await db.delete(progressPics).where(eq(progressPics.userId, userId));
+}
+
 // Get user with program
 export async function getUserWithProgram(telegramId: number): Promise<{ user: User; program: UserProgram } | null> {
   const user = await getUser(telegramId);

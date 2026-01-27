@@ -1,6 +1,8 @@
 import { Telegraf, Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { handleMessage, handlePhoto, handleStart } from '../agents/chat-handler.js';
+import { sendProgressGrid } from './images.js';
+import * as storage from './storage.js';
 
 export function createBot(token: string): Telegraf {
   const bot = new Telegraf(token);
@@ -26,9 +28,24 @@ export function createBot(token: string): Telegraf {
     await handleMessage(ctx, '/reset');
   });
 
-  // /progress command - show progress pics or analytics
+  // /progress command - show progress pics grid
   bot.command('progress', async (ctx) => {
-    await handleMessage(ctx, '/progress');
+    const telegramId = ctx.from?.id;
+    if (!telegramId) return;
+
+    const user = await storage.getUser(telegramId);
+    if (!user || !user.onboardingComplete) {
+      await ctx.reply('Complete setup first. /start');
+      return;
+    }
+
+    await ctx.reply(`Day ${user.currentDay} of 75. Here's your progress...`);
+    await sendProgressGrid(bot, telegramId, user.id);
+  });
+
+  // /timezone command - update timezone
+  bot.command('timezone', async (ctx) => {
+    await handleMessage(ctx, '/timezone');
   });
 
   // Handle photos (progress pics)
