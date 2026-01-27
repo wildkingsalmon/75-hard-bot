@@ -48,14 +48,11 @@ export async function checkAndSendAlerts(bot: Telegraf): Promise<void> {
 
       if (!shouldAlert) continue;
 
-      const today = new Date().toISOString().split('T')[0];
       const dayLog = await storage.getDayLog(user.id, user.currentDay);
 
       if (!dayLog) continue;
 
-      const baseCalories = program.baseCalories || program.bmr || 2000;
-      const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
-      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
+      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm');
 
       if (status.complete) continue;
 
@@ -97,9 +94,7 @@ export async function midnightCheck(bot: Telegraf): Promise<void> {
       const dayLog = await storage.getDayLog(user.id, user.currentDay);
       if (!dayLog) continue;
 
-      const baseCalories = program.baseCalories || program.bmr || 2000;
-      const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
-      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
+      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm');
 
       if (!status.complete) {
         await bot.telegram.sendMessage(

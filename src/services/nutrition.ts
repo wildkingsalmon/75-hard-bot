@@ -111,41 +111,14 @@ export function formatMealTable(parsed: ParsedFood): string {
   return lines.join('\n');
 }
 
-export function formatDailySummary(
-  meals: Meal[],
-  calorieTarget: number,
-  proteinTarget: number,
-  baseCalories?: number,
-  caloriesBurned?: number
-): string {
+// Simple daily summary without calorie targets
+export function formatDailySummarySimple(meals: Meal[]): string {
   const totalCals = meals.reduce((sum, m) => sum + m.calories, 0);
   const totalProtein = meals.reduce((sum, m) => sum + m.protein, 0);
+  const totalCarbs = meals.reduce((sum, m) => sum + m.carbs, 0);
+  const totalFat = meals.reduce((sum, m) => sum + m.fat, 0);
 
-  const remainingCals = calorieTarget - totalCals;
-
-  const lines: string[] = [];
-
-  // Show dynamic calorie breakdown if workout data exists
-  if (baseCalories && caloriesBurned !== undefined) {
-    lines.push(`\n**Budget:** ${baseCalories} base + ${caloriesBurned} burned = **${calorieTarget} cal**`);
-  }
-
-  lines.push(`**Consumed:** ${totalCals} / ${calorieTarget} cal`);
-
-  if (remainingCals > 0) {
-    lines.push(`**Remaining:** ${remainingCals} cal | Protein: ${totalProtein} / ${proteinTarget}g`);
-  } else if (remainingCals === 0) {
-    lines.push(`**Status:** At target | Protein: ${totalProtein} / ${proteinTarget}g`);
-  } else {
-    lines.push(`⚠️ **OVER by ${Math.abs(remainingCals)} cal** | Protein: ${totalProtein} / ${proteinTarget}g`);
-  }
-
-  // Warning if significantly under
-  if (totalCals > 0 && totalCals < calorieTarget * 0.7) {
-    lines.push(`\n_You're quite a bit under target. Make sure you're eating enough to fuel your training._`);
-  }
-
-  return lines.join('\n');
+  return `\n**Today:** ${totalCals} cal | ${totalProtein}g protein | ${totalCarbs}g carbs | ${totalFat}g fat`;
 }
 
 export function mealFromParsed(parsed: ParsedFood, description: string): Meal {

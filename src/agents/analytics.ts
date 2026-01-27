@@ -1,7 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { eq } from 'drizzle-orm';
 import { db, dayLogs } from '../db/index.js';
-import * as storage from '../services/storage.js';
 import type { User, UserProgram, DayLog } from '../db/schema.js';
 
 const anthropic = new Anthropic();
@@ -15,34 +14,33 @@ export async function generateProgressReport(user: User, program: UserProgram): 
     .orderBy(dayLogs.dayNumber);
 
   if (logs.length === 0) {
-    return "No data yet. Complete a few days first!";
+    return "No data yet. Complete a few days first.";
   }
 
   // Compile stats
   const stats = compileStats(logs, program);
 
-  // Use Opus for deep analysis
+  // Use Claude for analysis
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514', // Using Sonnet as Opus fallback for cost efficiency
+    model: 'claude-sonnet-4-20250514',
     max_tokens: 2048,
     messages: [{
       role: 'user',
-      content: `Analyze this 75 Hard progress and provide insights. Be direct and useful.
+      content: `Analyze this 75 Hard progress. Be direct.
 
 User: Day ${user.currentDay} of 75
+Diet: ${program.dietType || 'Not specified'}
 Total resets: ${stats.totalResets}
 Current streak: ${stats.currentStreak} days
 
 Workout consistency:
-- Workout 1 completion: ${stats.workout1Rate}%
-- Workout 2 completion: ${stats.workout2Rate}%
-- Average duration: ${stats.avgWorkoutDuration} mins
+- Outdoor workout completion: ${stats.outdoorWorkoutRate}%
+- Indoor workout completion: ${stats.indoorWorkoutRate}%
 
 Nutrition:
+- Meals logged: ${stats.totalMealsLogged}
 - Average daily calories: ${stats.avgCalories}
-- Target: ${stats.calorieTarget}
-- Days over target: ${stats.daysOverCalories}
-- Average protein: ${stats.avgProtein}g / ${program.proteinTarget}g target
+- Average protein: ${stats.avgProtein}g
 
 Reading:
 - Completion rate: ${stats.readingRate}%
@@ -63,27 +61,25 @@ Provide:
 3. Area needing attention
 4. One specific, actionable recommendation
 
-Keep it real and supportive. No fluff.`
+Keep it real. No fluff.`
     }]
   });
 
   const content = response.content[0];
   if (content.type === 'text') {
-    return `📊 **Progress Report - Day ${user.currentDay}**\n\n${content.text}`;
+    return `**Progress Report - Day ${user.currentDay}**\n\n${content.text}`;
   }
 
-  return "Unable to generate report. Try again later.";
+  return "Unable to generate report.";
 }
 
 type Stats = {
   totalResets: number;
   currentStreak: number;
-  workout1Rate: number;
-  workout2Rate: number;
-  avgWorkoutDuration: number;
+  outdoorWorkoutRate: number;
+  indoorWorkoutRate: number;
+  totalMealsLogged: number;
   avgCalories: number;
-  calorieTarget: number;
-  daysOverCalories: number;
   avgProtein: number;
   readingRate: number;
   totalPagesRead: number;
@@ -93,40 +89,21 @@ type Stats = {
 };
 
 function compileStats(logs: DayLog[], program: UserProgram): Stats {
-  const completedLogs = logs.filter(l => l.completed);
   const totalDays = logs.length;
 
   // Count workout completions
-  const workout1Complete = logs.filter(l => l.workout1?.done).length;
-  const workout2Complete = logs.filter(l => l.workout2?.done).length;
-
-  // Calculate average workout duration
-  const allWorkouts = [
-    ...logs.map(l => l.workout1?.duration_mins).filter(Boolean),
-    ...logs.map(l => l.workout2?.duration_mins).filter(Boolean)
-  ] as number[];
-  const avgWorkoutDuration = allWorkouts.length > 0
-    ? Math.round(allWorkouts.reduce((a, b) => a + b, 0) / allWorkouts.length)
-    : 0;
+  const outdoorComplete = logs.filter(l => l.outdoorWorkout?.done).length;
+  const indoorComplete = logs.filter(l => l.indoorWorkout?.done).length;
 
   // Nutrition stats
   const daysWithMeals = logs.filter(l => l.diet?.calories_consumed && l.diet.calories_consumed > 0);
+  const totalMealsLogged = logs.reduce((sum, l) => sum + (l.meals?.length || 0), 0);
   const avgCalories = daysWithMeals.length > 0
     ? Math.round(daysWithMeals.reduce((sum, l) => sum + (l.diet?.calories_consumed || 0), 0) / daysWithMeals.length)
     : 0;
   const avgProtein = daysWithMeals.length > 0
     ? Math.round(daysWithMeals.reduce((sum, l) => sum + (l.diet?.protein || 0), 0) / daysWithMeals.length)
     : 0;
-
-  // Calculate current calorie target (for latest day)
-  const latestDay = logs[logs.length - 1]?.dayNumber || 1;
-  const calorieTarget = storage.getCalorieTargetForDay(program.caloriePhases || [], latestDay);
-
-  // Days over calorie target
-  const daysOverCalories = daysWithMeals.filter(l => {
-    const dayTarget = storage.getCalorieTargetForDay(program.caloriePhases || [], l.dayNumber);
-    return (l.diet?.calories_consumed || 0) > dayTarget;
-  }).length;
 
   // Reading stats
   const readingComplete = logs.filter(l => l.reading?.done).length;
@@ -158,20 +135,18 @@ function compileStats(logs: DayLog[], program: UserProgram): Stats {
 
   // Recent trends (last 7 days)
   const recent = logs.slice(-7);
-  const recentWorkouts = recent.filter(l => l.workout1?.done && l.workout2?.done).length;
+  const recentWorkouts = recent.filter(l => l.outdoorWorkout?.done && l.indoorWorkout?.done).length;
   const recentReading = recent.filter(l => l.reading?.done).length;
   const recentWater = recent.filter(l => l.water?.done).length;
-  const recentTrends = `Workouts: ${recentWorkouts}/7, Reading: ${recentReading}/7, Water: ${recentWater}/7`;
+  const recentTrends = `Both workouts: ${recentWorkouts}/7, Reading: ${recentReading}/7, Water: ${recentWater}/7`;
 
   return {
     totalResets,
     currentStreak,
-    workout1Rate: Math.round((workout1Complete / totalDays) * 100),
-    workout2Rate: Math.round((workout2Complete / totalDays) * 100),
-    avgWorkoutDuration,
+    outdoorWorkoutRate: Math.round((outdoorComplete / totalDays) * 100),
+    indoorWorkoutRate: Math.round((indoorComplete / totalDays) * 100),
+    totalMealsLogged,
     avgCalories,
-    calorieTarget,
-    daysOverCalories,
     avgProtein,
     readingRate: Math.round((readingComplete / totalDays) * 100),
     totalPagesRead,

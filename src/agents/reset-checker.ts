@@ -23,9 +23,7 @@ export async function checkDayResets(bot: Telegraf): Promise<void> {
         continue;
       }
 
-      const baseCalories = program.baseCalories || program.bmr || 2000;
-      const calorieInfo = storage.getDynamicCalorieTarget(baseCalories, dayLog);
-      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, calorieInfo.total);
+      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm');
 
       if (!status.complete) {
         await handleReset(bot, user, program, status.missing);

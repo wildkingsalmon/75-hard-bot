@@ -2,7 +2,8 @@ import { eq, and } from 'drizzle-orm';
 import { db, users, userPrograms, dayLogs, progressPics } from '../db/index.js';
 import type {
   User, NewUser, UserProgram, NewUserProgram, DayLog, NewDayLog,
-  CaloriePhase, Book, WorkoutLog, ReadingLog, WaterLog, DietLog, ProgressPicLog, Meal, OnboardingState
+  Book, WorkoutLog, ReadingLog, WaterLog, DietLog, ProgressPicLog, Meal, OnboardingState,
+  UserContext, UserGoal, UserNote
 } from '../db/schema.js';
 
 // User operations
@@ -96,25 +97,64 @@ export async function updateUserProgram(userId: number, data: Partial<NewUserPro
   return result[0] || null;
 }
 
-export function getCalorieTargetForDay(phases: CaloriePhase[], dayNumber: number): number {
-  const phase = phases.find(p => dayNumber >= p.start_day && dayNumber <= p.end_day);
-  return phase?.target_calories || phases[phases.length - 1]?.target_calories || 2000;
+// User context operations - for storing goals, notes, etc. learned through conversation
+export async function getUserContext(userId: number): Promise<UserContext | null> {
+  const program = await getUserProgram(userId);
+  return program?.context || null;
 }
 
-// Dynamic calorie target: base + workout calories burned
-export function getDynamicCalorieTarget(
-  baseCalories: number,
-  dayLog: DayLog | null
-): { base: number; burned: number; total: number } {
-  const workout1Burn = dayLog?.workout1?.calories_burned || 0;
-  const workout2Burn = dayLog?.workout2?.calories_burned || 0;
-  const totalBurned = workout1Burn + workout2Burn;
+export async function addUserGoal(userId: number, goal: UserGoal): Promise<void> {
+  const program = await getUserProgram(userId);
+  if (!program) return;
 
-  return {
-    base: baseCalories,
-    burned: totalBurned,
-    total: baseCalories + totalBurned
-  };
+  const context = program.context || { goals: [], why: null, struggles: [], notes: [] };
+  context.goals.push(goal);
+
+  await db
+    .update(userPrograms)
+    .set({ context, updatedAt: new Date() })
+    .where(eq(userPrograms.userId, userId));
+}
+
+export async function updateUserWhy(userId: number, why: string): Promise<void> {
+  const program = await getUserProgram(userId);
+  if (!program) return;
+
+  const context = program.context || { goals: [], why: null, struggles: [], notes: [] };
+  context.why = why;
+
+  await db
+    .update(userPrograms)
+    .set({ context, updatedAt: new Date() })
+    .where(eq(userPrograms.userId, userId));
+}
+
+export async function addUserStruggle(userId: number, struggle: string): Promise<void> {
+  const program = await getUserProgram(userId);
+  if (!program) return;
+
+  const context = program.context || { goals: [], why: null, struggles: [], notes: [] };
+  if (!context.struggles.includes(struggle)) {
+    context.struggles.push(struggle);
+  }
+
+  await db
+    .update(userPrograms)
+    .set({ context, updatedAt: new Date() })
+    .where(eq(userPrograms.userId, userId));
+}
+
+export async function addUserNote(userId: number, note: UserNote): Promise<void> {
+  const program = await getUserProgram(userId);
+  if (!program) return;
+
+  const context = program.context || { goals: [], why: null, struggles: [], notes: [] };
+  context.notes.push(note);
+
+  await db
+    .update(userPrograms)
+    .set({ context, updatedAt: new Date() })
+    .where(eq(userPrograms.userId, userId));
 }
 
 // Day log operations
@@ -152,17 +192,17 @@ export async function updateDayLog(
   return result[0] || null;
 }
 
-export async function logWorkout1(userId: number, dayNumber: number, workout: WorkoutLog): Promise<void> {
+export async function logOutdoorWorkout(userId: number, dayNumber: number, workout: WorkoutLog): Promise<void> {
   await db
     .update(dayLogs)
-    .set({ workout1: workout })
+    .set({ outdoorWorkout: workout })
     .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)));
 }
 
-export async function logWorkout2(userId: number, dayNumber: number, workout: WorkoutLog): Promise<void> {
+export async function logIndoorWorkout(userId: number, dayNumber: number, workout: WorkoutLog): Promise<void> {
   await db
     .update(dayLogs)
-    .set({ workout2: workout })
+    .set({ indoorWorkout: workout })
     .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)));
 }
 
@@ -173,11 +213,31 @@ export async function logReading(userId: number, dayNumber: number, reading: Rea
     .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)));
 }
 
-export async function logWater(userId: number, dayNumber: number, water: WaterLog): Promise<void> {
+export async function confirmDiet(userId: number, dayNumber: number): Promise<void> {
+  await db
+    .update(dayLogs)
+    .set({ dietConfirmed: true })
+    .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)));
+}
+
+export async function addWater(userId: number, dayNumber: number, amountOz: number, waterTarget: number): Promise<WaterLog> {
+  const log = await getDayLog(userId, dayNumber);
+  const currentAmount = log?.water?.amount_oz || 0;
+  const newAmount = currentAmount + amountOz;
+  const isDone = newAmount >= waterTarget;
+
+  const water: WaterLog = {
+    done: isDone,
+    amount_oz: newAmount,
+    logged_at: new Date().toISOString()
+  };
+
   await db
     .update(dayLogs)
     .set({ water })
     .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)));
+
+  return water;
 }
 
 export async function addMeal(userId: number, dayNumber: number, meal: Meal): Promise<DayLog | null> {
@@ -195,7 +255,6 @@ export async function addMeal(userId: number, dayNumber: number, meal: Meal): Pr
     .set({
       meals,
       diet: {
-        done: false, // Will be evaluated at end of day
         calories_consumed: totalCals,
         protein: totalProtein,
         carbs: totalCarbs,
@@ -223,33 +282,29 @@ export async function markDayComplete(userId: number, dayNumber: number): Promis
     .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)));
 }
 
-export function isDayComplete(log: DayLog, waterTarget: number, calorieTarget: number): {
+export function isDayComplete(log: DayLog, waterTarget: number, dietMode: string): {
   complete: boolean;
   missing: string[];
-  calorieStatus: 'under' | 'at' | 'over';
 } {
   const missing: string[] = [];
 
-  if (!log.workout1?.done) missing.push('Workout 1 (outdoor)');
-  if (!log.workout2?.done) missing.push('Workout 2');
+  if (!log.outdoorWorkout?.done) missing.push('Outdoor workout');
+  if (!log.indoorWorkout?.done) missing.push('Indoor workout');
   if (!log.reading?.done) missing.push('Read 10 pages');
   if (!log.water?.done || (log.water.amount_oz < waterTarget)) missing.push('Water');
   if (!log.progressPic?.done) missing.push('Progress pic');
 
-  const caloriesConsumed = log.diet?.calories_consumed || 0;
-  let calorieStatus: 'under' | 'at' | 'over' = 'under';
-
-  if (caloriesConsumed > calorieTarget) {
-    calorieStatus = 'over';
-    missing.push('Diet (over calories)');
-  } else if (caloriesConsumed === calorieTarget) {
-    calorieStatus = 'at';
+  // Diet check based on mode
+  if (dietMode === 'confirm') {
+    if (!log.dietConfirmed) missing.push('Confirm diet');
+  } else {
+    // track or deficit mode - need at least one meal logged
+    if (!log.meals || log.meals.length === 0) missing.push('Log food');
   }
 
   return {
     complete: missing.length === 0,
-    missing,
-    calorieStatus
+    missing
   };
 }
 
@@ -290,4 +345,4 @@ export async function getUserWithProgram(telegramId: number): Promise<{ user: Us
 }
 
 // Re-export types for convenience
-export type { User, UserProgram, DayLog, CaloriePhase, Book } from '../db/schema.js';
+export type { User, UserProgram, DayLog, Book, UserContext, UserGoal, UserNote } from '../db/schema.js';
