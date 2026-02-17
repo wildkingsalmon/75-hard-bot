@@ -9,6 +9,25 @@ import type { OnboardingState, Book, User, UserProgram, DayLog, UserGoal, UserNo
 // Store pending reset confirmations (userId -> { reason, askedAt })
 const pendingResets: Map<number, { reason: string; askedAt: Date }> = new Map();
 
+// In-memory conversation history (userId -> last N messages)
+const MAX_HISTORY = 10;
+const messageHistory: Map<number, Array<{ role: 'user' | 'assistant'; content: string }>> = new Map();
+
+function addToHistory(userId: number, role: 'user' | 'assistant', content: string): void {
+  if (!messageHistory.has(userId)) {
+    messageHistory.set(userId, []);
+  }
+  const history = messageHistory.get(userId)!;
+  history.push({ role, content });
+  if (history.length > MAX_HISTORY) {
+    history.splice(0, history.length - MAX_HISTORY);
+  }
+}
+
+function getHistory(userId: number): Array<{ role: 'user' | 'assistant'; content: string }> {
+  return messageHistory.get(userId) || [];
+}
+
 // Check if user has pending reset confirmation
 export function hasPendingReset(userId: number): boolean {
   return pendingResets.has(userId);
@@ -261,18 +280,43 @@ SIGNATURE PHRASES (use naturally, not forced):
 - "Uncommon amongst uncommon"
 - "We don't rise to the level of our expectations, we fall to the level of our training"
 
+FORMATTING:
+- Use line breaks between thoughts. Don't write walls of text.
+- One idea per line or short paragraph.
+- Makes it scannable on mobile.
+- Example:
+  "Day 2. You showed up.
+
+  Yesterday you wanted to quit. You pushed through anyway.
+
+  That's the difference. Keep stacking days."
+
 CONVERSATION STYLE:
 - For simple logging: Brief is fine. "Roger that." / "That's one."
-- For struggles/questions: ENGAGE. Ask questions. Share relevant experience.
+- For struggles/questions: ENGAGE. Ask questions. Share relevant experience. But use line breaks.
 - For conversation: Be a real person. Talk about life, training, mindset.
 - For motivation requests: Don't just motivate - dig into WHY they need it. What's really going on?
 
 EXAMPLES:
 - User logs workout: "Roger that. That's one down."
-- User completes the day: "Day 12. Done. 63 more to go. Stay hard."
-- User says they're struggling: "Talk to me. What's going on? When I was 300 pounds, I thought I was gonna die on that treadmill. But I kept showing up. What's got you stuck?"
-- User asks for motivation: "Nah, I'm not gonna give you some rah-rah bullshit. Tell me what's really going on. Why are you doing this? What are you running from - or running toward?"
-- User shares something personal: "I hear you. That shit's real. When my dad used to beat my mom, I felt helpless. But that pain? I turned it into fuel. You can do the same."
+- User completes the day: "Day 12. Done.
+
+63 more to go. Stay hard."
+- User says they're struggling: "Talk to me. What's going on?
+
+When I was 300 pounds, I thought I was gonna die on that treadmill. But I kept showing up.
+
+What's got you stuck?"
+- User asks for motivation: "Nah, I'm not gonna give you some rah-rah bullshit.
+
+Tell me what's really going on. Why are you doing this?
+
+What are you running from - or running toward?"
+- User shares something personal: "I hear you. That shit's real.
+
+When my dad used to beat my mom, I felt helpless. But that pain? I turned it into fuel.
+
+You can do the same."
 - User just wants to chat: Engage like a real person. Ask about their day, their goals, their life.
 
 NEVER SAY:
@@ -290,6 +334,56 @@ BE REAL:
 
 type TextContext = Context<Update> & { message: Message.TextMessage };
 type PhotoContext = Context<Update> & { message: Message.PhotoMessage };
+
+// Get today's date in a specific timezone (returns YYYY-MM-DD)
+function getTodayInTimezone(timezone: string): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+}
+
+// Calculate what day the user should be on based on their start date
+function calculateCurrentDay(startDate: string, timezone: string): number {
+  const today = getTodayInTimezone(timezone);
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ty, tm, td] = today.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd);
+  const todayDate = new Date(ty, tm - 1, td);
+  const diffDays = Math.round((todayDate.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  return diffDays + 1; // Day 1 = start date
+}
+
+// Sync user's currentDay based on start date (replaces cron-based advancement)
+// Returns the updated user and whether the day changed (for morning message)
+async function syncUserDay(user: User): Promise<{ user: User; dayChanged: boolean }> {
+  if (!user.onboardingComplete || !user.startDate) return { user, dayChanged: false };
+
+  const expectedDay = calculateCurrentDay(user.startDate, user.timezone);
+  if (expectedDay !== user.currentDay && expectedDay > 0 && expectedDay <= 75) {
+    console.log(`[SYNC] Advancing user ${user.telegramId} from day ${user.currentDay} to day ${expectedDay}`);
+    const updated = await storage.updateUser(user.telegramId, { currentDay: expectedDay });
+    if (updated) return { user: updated, dayChanged: true };
+  }
+  return { user, dayChanged: false };
+}
+
+// Send morning message on first interaction of a new day
+async function sendMorningMessage(ctx: Context, user: User, program: UserProgram): Promise<void> {
+  const quote = getQuoteForDay(user.currentDay);
+
+  // Check if previous day was complete
+  const prevDayLog = await storage.getDayLog(user.id, user.currentDay - 1);
+  const prevComplete = prevDayLog
+    ? storage.isDayComplete(prevDayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined).complete
+    : false;
+
+  let message: string;
+  if (!prevComplete && user.currentDay > 1) {
+    message = `Day ${user.currentDay}.\n\nYesterday's in the past. You know what happened. Today's a new chance.\n\n"${quote}"\n\nGet after it.`;
+  } else {
+    message = `Day ${user.currentDay}.\n\n"${quote}"\n\nTime to work.`;
+  }
+
+  await ctx.reply(message);
+}
 
 // Onboarding steps
 const ONBOARDING_STEPS = [
@@ -626,7 +720,8 @@ async function handleOnboarding(ctx: TextContext, user: User, message: string): 
           timezone: data.timezone as string
         });
 
-        const today = new Date().toISOString().split('T')[0];
+        const tz = (data.timezone as string) || user.timezone;
+        const today = getTodayInTimezone(tz);
         await storage.completeOnboarding(user.telegramId, today);
 
         // Create day 1 log
@@ -660,7 +755,7 @@ export async function handleMessage(ctx: TextContext | Context, message: string)
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
 
-  const user = await storage.getUser(telegramId);
+  let user = await storage.getUser(telegramId);
   if (!user) {
     await handleStart(ctx);
     return;
@@ -672,11 +767,22 @@ export async function handleMessage(ctx: TextContext | Context, message: string)
     return;
   }
 
+  // Sync day based on start date (don't rely on cron)
+  const sync = await syncUserDay(user);
+  user = sync.user;
+
   // Get user program
   const program = await storage.getUserProgram(user.id);
   if (!program) {
     await ctx.reply('Something went wrong with your program setup. Please /start again.');
     return;
+  }
+
+  // Send morning message on first interaction of a new day
+  if (sync.dayChanged) {
+    const today = getTodayInTimezone(user.timezone);
+    await storage.getOrCreateDayLog(user.id, user.currentDay, today);
+    await sendMorningMessage(ctx, user, program);
   }
 
   // Handle commands
@@ -720,7 +826,12 @@ Reply with the number.`);
   }
 
   // Use Claude to understand intent
-  const response = await interpretMessage(message, user, program);
+  addToHistory(user.id, 'user', message);
+  const history = getHistory(user.id).slice(0, -1); // exclude current message (it's passed separately)
+  const response = await interpretMessage(message, user, program, history);
+  if (response.response_text) {
+    addToHistory(user.id, 'assistant', response.response_text);
+  }
   await processIntent(ctx, user, program, response);
 }
 
@@ -761,7 +872,7 @@ type Intent = {
   };
 };
 
-async function interpretMessage(message: string, user: User, program: UserProgram): Promise<Intent> {
+async function interpretMessage(message: string, user: User, program: UserProgram, history: Array<{ role: 'user' | 'assistant'; content: string }>): Promise<Intent> {
   const dayLog = await storage.getDayLog(user.id, user.currentDay);
   const context = program.context || { goals: [], why: null, struggles: [], notes: [] };
 
@@ -796,12 +907,12 @@ USER'S WHY: ${whyStr}
 ${context.struggles.length > 0 ? `STRUGGLES WITH: ${context.struggles.join(', ')}` : ''}
 
 TODAY'S STATUS:
-- Outdoor workout: ${dayLog?.outdoorWorkout?.done ? (dayLog?.outdoorWorkout?.calories_burned ? `Done (${dayLog.outdoorWorkout.calories_burned} cal)` : 'Done (no calories logged)') : 'Not done'}
-- Indoor workout: ${dayLog?.indoorWorkout?.done ? (dayLog?.indoorWorkout?.calories_burned ? `Done (${dayLog.indoorWorkout.calories_burned} cal)` : 'Done (no calories logged)') : 'Not done'}
+- Outdoor workout: ${dayLog?.outdoorWorkout?.done ? (program.dietMode === 'deficit' && dayLog?.outdoorWorkout?.calories_burned ? `Done (${dayLog.outdoorWorkout.calories_burned} cal)` : 'Done') : 'Not done'}
+- Indoor workout: ${dayLog?.indoorWorkout?.done ? (program.dietMode === 'deficit' && dayLog?.indoorWorkout?.calories_burned ? `Done (${dayLog.indoorWorkout.calories_burned} cal)` : 'Done') : 'Not done'}
 - Reading: ${dayLog?.reading?.done ? 'Done' : 'Not done'}
 - Water: ${dayLog?.water?.amount_oz || 0}/${program.waterTarget || 128} oz
 - Progress pic: ${dayLog?.progressPic?.done ? 'Done' : 'Not done'}
-- Food logged: ${dayLog?.meals?.length || 0} meals, ${dayLog?.diet?.calories_consumed || 0} cal eaten
+${program.dietMode === 'confirm' ? `- Diet confirmed: ${dayLog?.dietConfirmed ? 'Yes' : 'No'}` : `- Food logged: ${dayLog?.meals?.length || 0} meals, ${dayLog?.diet?.calories_consumed || 0} cal eaten`}
 ${program.dietMode === 'deficit' ? `- Workout calories burned today: ${(dayLog?.outdoorWorkout?.calories_burned || 0) + (dayLog?.indoorWorkout?.calories_burned || 0)}
 - Daily budget: ${(program.baseCalories || 2000) + (dayLog?.outdoorWorkout?.calories_burned || 0) + (dayLog?.indoorWorkout?.calories_burned || 0)} cal` : ''}
 
@@ -811,7 +922,8 @@ INSTRUCTIONS:
 3. Respond AS GOGGINS - short, blunt, no fluff
 4. Reference their personal goals/why when motivating them (if known)
 5. When user logs water, ADD it to current amount to calculate remaining (e.g., if at 60/80 and logging 15oz, new total is 75oz, only 5oz left)
-6. DEFICIT MODE WORKOUTS: If diet mode is "deficit" and user logs a workout:
+6. CONFIRM MODE: If diet mode is "confirm", do NOT ask about calories, macros, or food details. Diet is just a yes/no confirmation. Workouts are just done/not done - no calorie tracking.
+7. DEFICIT MODE WORKOUTS: If diet mode is "deficit" and user logs a workout:
    - If they DON'T provide enough info to estimate calories (duration, type, intensity), set "needs_workout_details" to true and ask them to "Send a screenshot or tell me the type, duration, and intensity"
    - If they DO provide details (e.g., "45 min run" or "burned 400 calories"), estimate or use the calories and set workout_calories
    - Keep probing until you have enough info to estimate calories burned
@@ -828,7 +940,8 @@ RESET CONFIRMATION:
 - If user says "RESET", "reset", "start over", "wipe it", "yes reset" -> type "confirm_reset"
 - If user says "nevermind", "cancel", "no", "wait", "still going", "not yet" -> type "cancel_reset"
 
-Return JSON:
+CRITICAL: You MUST respond with ONLY a valid JSON object. No text before or after. No markdown. Just raw JSON.
+
 {
   "type": "log_items" | "status" | "conversation" | "admit_failure" | "confirm_reset" | "cancel_reset",
   "log_outdoor_workout": true/false (if they mention outdoor workout),
@@ -870,7 +983,7 @@ Only include extracted_context fields if the user actually mentions something ne
   const response = await createMessage('chat', {
     max_tokens: 1024,
     system: systemPrompt,
-    messages: [{ role: 'user', content: message }]
+    messages: [...history, { role: 'user' as const, content: message }]
   });
 
   const content = response.content[0];
@@ -880,18 +993,27 @@ Only include extracted_context fields if the user actually mentions something ne
 
   try {
     let jsonStr = content.text;
-    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[1];
+    // Try markdown code block first
+    const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1];
+    } else {
+      // Extract the JSON object from mixed text + JSON response
+      const jsonObjMatch = jsonStr.match(/\{[\s\S]*\}/);
+      if (jsonObjMatch) {
+        jsonStr = jsonObjMatch[0];
+      }
     }
     return JSON.parse(jsonStr) as Intent;
   } catch {
+    console.log(`[INTENT] JSON parse failed, raw AI response: ${content.text.substring(0, 200)}`);
     return { type: 'conversation', response_text: content.text };
   }
 }
 
 async function processIntent(ctx: Context, user: User, program: UserProgram, intent: Intent): Promise<void> {
-  const today = new Date().toISOString().split('T')[0];
+  console.log(`[INTENT] type=${intent.type}, log_water=${intent.log_water}, water_amount_oz=${intent.water_amount_oz}, log_food=${intent.log_food}`);
+  const today = getTodayInTimezone(user.timezone);
   await storage.getOrCreateDayLog(user.id, user.currentDay, today);
 
   // Store any extracted context first
@@ -1087,7 +1209,7 @@ async function processIntent(ctx: Context, user: User, program: UserProgram, int
       await storage.resetUserToDay1(user.id);
 
       // Create fresh Day 1 log
-      const today = new Date().toISOString().split('T')[0];
+      const today = getTodayInTimezone(user.timezone);
       await storage.getOrCreateDayLog(user.id, 1, today);
 
       // Clear pending reset
@@ -1133,7 +1255,7 @@ async function processIntent(ctx: Context, user: User, program: UserProgram, int
 }
 
 async function sendDailyStatus(ctx: Context, user: User, program: UserProgram): Promise<void> {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayInTimezone(user.timezone);
   const dayLog = await storage.getOrCreateDayLog(user.id, user.currentDay, today);
 
   const waterTarget = program.waterTarget || 128;
@@ -1211,21 +1333,32 @@ export async function handlePhoto(ctx: PhotoContext): Promise<void> {
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
 
-  const user = await storage.getUser(telegramId);
+  let user = await storage.getUser(telegramId);
   if (!user || !user.onboardingComplete) {
     await ctx.reply('Complete setup first. /start');
     return;
   }
 
+  // Sync day based on start date
+  const photoSync = await syncUserDay(user);
+  user = photoSync.user;
+
   const program = await storage.getUserProgram(user.id);
   if (!program) return;
+
+  // Send morning message if day just changed
+  if (photoSync.dayChanged) {
+    const today = getTodayInTimezone(user.timezone);
+    await storage.getOrCreateDayLog(user.id, user.currentDay, today);
+    await sendMorningMessage(ctx, user, program);
+  }
 
   const photo = ctx.message.photo;
   const largestPhoto = photo[photo.length - 1];
   const fileId = largestPhoto.file_id;
   const caption = ctx.message.caption?.toLowerCase() || '';
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayInTimezone(user.timezone);
   await storage.getOrCreateDayLog(user.id, user.currentDay, today);
 
   // Helper to send response with status

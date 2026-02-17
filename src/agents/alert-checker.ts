@@ -1,6 +1,9 @@
 import { Telegraf } from 'telegraf';
 import * as storage from '../services/storage.js';
 
+// Track last alerted hour per user to prevent duplicate alerts on service restart
+const lastAlertedAt = new Map<string, { hour: number; sentAt: number }>();
+
 // Goggins-style alerts - escalating brevity
 const ALERT_MESSAGES: Record<number, string[]> = {
   19: [
@@ -50,15 +53,25 @@ export async function checkAndSendAlerts(bot: Telegraf): Promise<void> {
 
       const dayLog = await storage.getDayLog(user.id, user.currentDay);
 
-      if (!dayLog) continue;
-
-      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined);
+      // If no dayLog, user hasn't logged anything - definitely needs a reminder
+      const status = dayLog
+        ? storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined)
+        : { complete: false, missing: ['Outdoor workout', 'Indoor workout', 'Water', 'Reading', 'Diet', 'Progress pic'] };
 
       if (status.complete) continue;
+
+      // Dedup: skip if we already alerted this user for this hour (prevents doubles on restart)
+      const key = String(user.telegramId);
+      const prev = lastAlertedAt.get(key);
+      const nowMs = Date.now();
+      if (prev && prev.hour === currentHour && (nowMs - prev.sentAt) < 10 * 60 * 1000) {
+        continue;
+      }
 
       // Generate Goggins-style alert
       const alertMessage = generateGogginsAlert(currentHour, status.missing);
       await bot.telegram.sendMessage(user.telegramId, alertMessage);
+      lastAlertedAt.set(key, { hour: currentHour, sentAt: nowMs });
     } catch (error) {
       console.error(`Alert check failed for user ${user.telegramId}:`, error);
     }
@@ -92,9 +105,10 @@ export async function midnightCheck(bot: Telegraf): Promise<void> {
       if (!program) continue;
 
       const dayLog = await storage.getDayLog(user.id, user.currentDay);
-      if (!dayLog) continue;
 
-      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined);
+      const status = dayLog
+        ? storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined)
+        : { complete: false, missing: ['Outdoor workout', 'Indoor workout', 'Water', 'Reading', 'Diet', 'Progress pic'] };
 
       if (!status.complete) {
         // Interactive check-in instead of just a warning

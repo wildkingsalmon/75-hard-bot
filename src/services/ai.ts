@@ -16,17 +16,17 @@ export type ModelType = keyof typeof MODELS;
 
 // Default models for different use cases - easy to adjust
 export const MODEL_CONFIG = {
-  // Main chat/conversation
+  // Main chat/conversation - Sonnet needed for reliable structured JSON output
   chat: MODELS.sonnet,
 
-  // Food parsing (needs good estimation)
-  nutrition: MODELS.sonnet,
+  // Food parsing - Haiku is just as accurate and 3x faster
+  nutrition: MODELS.haiku,
 
   // Workout screenshot parsing
-  vision: MODELS.sonnet,
+  vision: MODELS.haiku,
 
   // Analytics/insights
-  analytics: MODELS.sonnet,
+  analytics: MODELS.haiku,
 } as const;
 
 // Shared Anthropic client

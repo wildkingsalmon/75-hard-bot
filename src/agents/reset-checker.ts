@@ -2,7 +2,9 @@ import { Telegraf } from 'telegraf';
 import * as storage from '../services/storage.js';
 import { getQuoteForDay } from '../data/goggins-quotes.js';
 
-export async function checkDayResets(bot: Telegraf): Promise<void> {
+// 6am: Start the new day - advance day counter, create dayLog, send morning message
+export async function morningRoutine(bot: Telegraf): Promise<void> {
+  console.log('Running 6am morning routine...');
   const users = await storage.getAllActiveUsers();
   const now = new Date();
 
@@ -11,79 +13,59 @@ export async function checkDayResets(bot: Telegraf): Promise<void> {
       const userTime = new Date(now.toLocaleString('en-US', { timeZone: user.timezone }));
       const currentHour = userTime.getHours();
 
-      // Only run at 5am (5:00-5:05)
-      if (currentHour !== 5) continue;
+      // Only run at 6am
+      if (currentHour !== 6) continue;
 
       const program = await storage.getUserProgram(user.id);
       if (!program) continue;
 
-      const dayLog = await storage.getDayLog(user.id, user.currentDay);
-      if (!dayLog) {
-        // No activity logged - ask them to confirm failure
-        await askForFailureConfirmation(bot, user, ['No activity logged']);
-        continue;
-      }
+      // Check if previous day was complete
+      const prevDayLog = await storage.getDayLog(user.id, user.currentDay);
+      const prevDayComplete = prevDayLog
+        ? storage.isDayComplete(prevDayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined).complete
+        : false;
 
-      const status = storage.isDayComplete(dayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined);
+      // Advance to new day
+      const prevDay = user.currentDay;
+      await storage.advanceUserDay(user.id);
+      const newDay = prevDay + 1;
 
-      if (!status.complete) {
-        // Day incomplete - ask them to confirm (no auto-reset)
-        await askForFailureConfirmation(bot, user, status.missing);
+      // Create dayLog for the new day
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: user.timezone });
+      await storage.getOrCreateDayLog(user.id, newDay, today);
+
+      // Get quote for the day
+      const quote = getQuoteForDay(newDay);
+
+      // Build morning message
+      let message: string;
+      if (!prevDayComplete && prevDay > 0) {
+        // Previous day wasn't complete - acknowledge but move forward
+        message = `Day ${newDay}.\n\nYesterday's in the past. You know what happened. Today's a new chance to prove who you really are.\n\n"${quote}"\n\nGet after it.`;
       } else {
-        await handleDayAdvance(bot, user, program);
+        // Normal morning message
+        const milestone = getMilestone(newDay);
+        message = `Day ${newDay}.\n\n"${quote}"${milestone}\n\nTime to work.`;
       }
+
+      await bot.telegram.sendMessage(user.telegramId, message);
+      console.log(`Sent morning message to user ${user.telegramId} for Day ${newDay}`);
     } catch (error) {
-      console.error(`Reset check failed for user ${user.telegramId}:`, error);
+      console.error(`Morning routine failed for user ${user.telegramId}:`, error);
     }
   }
 }
 
-async function askForFailureConfirmation(
-  bot: Telegraf,
-  user: storage.User,
-  missing: string[]
-): Promise<void> {
-  const missingStr = missing.join(', ');
-
-  // Ask for confirmation instead of auto-resetting
-  let message: string;
-
-  if (user.currentDay === 1) {
-    message = `5am. Day 1 incomplete.\n\nMissing: ${missingStr}\n\nDid you finish after midnight, or did Day 1 not happen? Tell me.`;
-  } else {
-    message = `5am. Day ${user.currentDay} incomplete.\n\nMissing: ${missingStr}\n\nDid you get it done after midnight? Or do we need to talk about starting over?`;
-  }
-
-  await bot.telegram.sendMessage(user.telegramId, message);
+function getMilestone(day: number): string {
+  if (day === 25) return '\n\n25 days. You\'re just getting started.';
+  if (day === 38) return '\n\nHalfway. Don\'t get comfortable.';
+  if (day === 50) return '\n\n50. Most people have quit three times by now.';
+  if (day === 60) return '\n\n15 left. This is where it gets real.';
+  if (day === 70) return '\n\n5 days. Don\'t you dare let up.';
+  return '';
 }
 
-async function handleDayAdvance(
-  bot: Telegraf,
-  user: storage.User,
-  program: storage.UserProgram
-): Promise<void> {
-  const completedDay = user.currentDay;
-
-  await storage.advanceUserDay(user.id);
-
-  const nextDay = completedDay + 1;
-
-  const today = new Date().toISOString().split('T')[0];
-  await storage.getOrCreateDayLog(user.id, nextDay, today);
-
-  // Get quote for the day
-  const quote = getQuoteForDay(nextDay);
-
-  // Goggins-style milestones (sparse, not celebratory)
-  let milestone = '';
-  if (nextDay === 25) milestone = '\n\n25 days. You\'re just getting started.';
-  if (nextDay === 38) milestone = '\n\nHalfway. Don\'t get comfortable.';
-  if (nextDay === 50) milestone = '\n\n50. Most people have quit three times by now.';
-  if (nextDay === 60) milestone = '\n\n15 left. This is where it gets real.';
-  if (nextDay === 70) milestone = '\n\n5 days. Don\'t you dare let up.';
-
-  // Simple morning message with quote
-  const message = `Day ${nextDay}.\n\n"${quote}"${milestone}\n\nYou know what you owe.`;
-
-  await bot.telegram.sendMessage(user.telegramId, message);
+// 5am check removed - morning routine at 6am handles everything
+export async function checkDayResets(_bot: Telegraf): Promise<void> {
+  // Kept for backwards compatibility but no longer used
 }

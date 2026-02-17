@@ -1,5 +1,4 @@
 import { createMessage } from './ai.js';
-import * as fatsecret from './fatsecret.js';
 import type { Meal } from '../db/schema.js';
 
 export type ParsedFood = {
@@ -9,7 +8,6 @@ export type ParsedFood = {
     protein: number;
     carbs: number;
     fat: number;
-    source?: 'fatsecret' | 'ai'; // Track where data came from
   }[];
   totalCalories: number;
   totalProtein: number;
@@ -17,56 +15,30 @@ export type ParsedFood = {
   totalFat: number;
 };
 
-type ParsedItem = {
-  item: string;      // Searchable food name
-  quantity: number;  // Number of servings
-  unit: string;      // Serving unit (e.g., "oz", "cup", "piece")
+type AIItem = {
+  name: string;
+  quantity: number;
+  unit: string;
+  per_unit: {
+    cal?: number;
+    calories?: number;
+    p?: number;
+    protein?: number;
+    protein_g?: number;
+    c?: number;
+    carbs?: number;
+    carbs_g?: number;
+    carbohydrates?: number;
+    f?: number;
+    fat?: number;
+    fat_g?: number;
+  };
 };
 
-// Use Claude to parse user input into searchable items
-async function parseIntoSearchTerms(userInput: string): Promise<ParsedItem[]> {
-  const response = await createMessage('nutrition', {
-    max_tokens: 512,
-    messages: [
-      {
-        role: 'user',
-        content: `Parse this food entry into individual searchable items. Extract the food name (simple, searchable) and quantity.
-
-Food entry: "${userInput}"
-
-Respond ONLY with JSON array:
-[{"item": "scrambled eggs", "quantity": 4, "unit": "large"}, {"item": "white toast", "quantity": 2, "unit": "slice"}]
-
-Rules:
-- Keep item names simple and searchable (e.g., "chicken breast" not "grilled seasoned chicken breast")
-- Extract quantities as numbers
-- Default to reasonable portions if not specified
-- Separate combo items (e.g., "eggs and toast" becomes two items)`
-      }
-    ]
-  });
-
-  const content = response.content[0];
-  if (content.type !== 'text') {
-    return [];
-  }
-
-  try {
-    let jsonStr = content.text;
-    const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      jsonStr = jsonMatch[0];
-    }
-    return JSON.parse(jsonStr) as ParsedItem[];
-  } catch {
-    return [];
-  }
-}
-
-// AI fallback estimation (original method)
-async function estimateWithAI(userInput: string, dietType?: string): Promise<ParsedFood> {
+// Main function: Parse food with AI (Haiku)
+export async function parseFoodEntry(userInput: string, dietType?: string): Promise<ParsedFood> {
   const dietNote = dietType
-    ? `\nNote: User follows a ${dietType} diet.`
+    ? `\nUser follows a ${dietType} diet.`
     : '';
 
   const response = await createMessage('nutrition', {
@@ -74,23 +46,19 @@ async function estimateWithAI(userInput: string, dietType?: string): Promise<Par
     messages: [
       {
         role: 'user',
-        content: `Parse this food entry and estimate macros. Be accurate - use standard USDA values.
+        content: `Parse this food entry into individual items with quantities and PER-UNIT nutrition.
 
 Food entry: "${userInput}"
 
-Respond ONLY with valid JSON:
-{
-  "items": [{"description": "Food with portion", "calories": 0, "protein": 0, "carbs": 0, "fat": 0}],
-  "totalCalories": 0,
-  "totalProtein": 0,
-  "totalCarbs": 0,
-  "totalFat": 0
-}
+Return JSON array where each item has:
+- "name": food name
+- "quantity": number of units
+- "unit": the unit (e.g., "large", "slice", "tsp", "oz", "cup")
+- "per_unit": nutrition for ONE unit (not total, not per 100g)
 
-Rules:
-- All values should be integers
-- Use realistic portion sizes if not specified
-- For restaurant food, estimate on the higher side${dietNote}`
+IMPORTANT: Return values for the ACTUAL PORTION SIZE (e.g., 1 tsp = ~5g, 1 slice bread, 1 large egg), NOT per 100g.
+
+Respond with ONLY the JSON array, no explanation.${dietNote}`
       }
     ]
   });
@@ -100,88 +68,34 @@ Rules:
     throw new Error('Unexpected response type');
   }
 
+  // Extract JSON array from response
   let jsonStr = content.text;
-  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || jsonStr.match(/\{[\s\S]*\}/);
+  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || jsonStr.match(/\[[\s\S]*\]/);
   if (jsonMatch) {
     jsonStr = jsonMatch[1] || jsonMatch[0];
   }
 
-  const parsed = JSON.parse(jsonStr) as ParsedFood;
-  // Mark items as AI-sourced
-  parsed.items = parsed.items.map(item => ({ ...item, source: 'ai' as const }));
-  return parsed;
-}
+  const aiItems = JSON.parse(jsonStr) as AIItem[];
 
-// Main function: Try FatSecret first, fall back to AI
-export async function parseFoodEntry(userInput: string, dietType?: string): Promise<ParsedFood> {
-  // If FatSecret isn't configured, use AI only
-  if (!fatsecret.isConfigured()) {
-    return estimateWithAI(userInput, dietType);
-  }
-
-  try {
-    // Step 1: Parse input into searchable items
-    const searchTerms = await parseIntoSearchTerms(userInput);
-
-    if (searchTerms.length === 0) {
-      return estimateWithAI(userInput, dietType);
-    }
-
-    const items: ParsedFood['items'] = [];
-
-    // Step 2: Search FatSecret for each item
-    for (const term of searchTerms) {
-      const searchQuery = `${term.quantity} ${term.unit} ${term.item}`;
-
-      try {
-        const results = await fatsecret.searchFoods(term.item, 3);
-
-        if (results.length > 0) {
-          // Use the first result's description to get nutrition
-          const parsed = fatsecret.parseDescription(results[0].food_description);
-
-          if (parsed) {
-            // Scale by quantity (FatSecret returns per-serving values)
-            const multiplier = term.quantity;
-            items.push({
-              description: `${term.quantity} ${term.unit} ${results[0].food_name}`,
-              calories: Math.round(parsed.calories * multiplier),
-              protein: Math.round(parsed.protein * multiplier),
-              carbs: Math.round(parsed.carbs * multiplier),
-              fat: Math.round(parsed.fat * multiplier),
-              source: 'fatsecret',
-            });
-            continue;
-          }
-        }
-      } catch (e) {
-        console.error(`FatSecret search failed for "${term.item}":`, e);
-      }
-
-      // Fallback: Use AI for this specific item
-      const aiResult = await estimateWithAI(searchQuery);
-      if (aiResult.items.length > 0) {
-        items.push({ ...aiResult.items[0], source: 'ai' });
-      }
-    }
-
-    // Calculate totals
-    const totalCalories = items.reduce((sum, i) => sum + i.calories, 0);
-    const totalProtein = items.reduce((sum, i) => sum + i.protein, 0);
-    const totalCarbs = items.reduce((sum, i) => sum + i.carbs, 0);
-    const totalFat = items.reduce((sum, i) => sum + i.fat, 0);
-
+  // Handle different key formats models might return
+  const items: ParsedFood['items'] = aiItems.map(item => {
+    const pu = item.per_unit;
     return {
-      items,
-      totalCalories,
-      totalProtein,
-      totalCarbs,
-      totalFat,
+      description: `${item.quantity} ${item.unit} ${item.name}`,
+      calories: Math.round((pu.cal ?? pu.calories ?? 0) * item.quantity),
+      protein: Math.round((pu.p ?? pu.protein ?? pu.protein_g ?? 0) * item.quantity),
+      carbs: Math.round((pu.c ?? pu.carbs ?? pu.carbs_g ?? pu.carbohydrates ?? 0) * item.quantity),
+      fat: Math.round((pu.f ?? pu.fat ?? pu.fat_g ?? 0) * item.quantity),
     };
-  } catch (e) {
-    console.error('FatSecret integration failed, using AI fallback:', e);
-    return estimateWithAI(userInput, dietType);
-  }
+  });
+
+  return {
+    items,
+    totalCalories: items.reduce((sum, i) => sum + i.calories, 0),
+    totalProtein: items.reduce((sum, i) => sum + i.protein, 0),
+    totalCarbs: items.reduce((sum, i) => sum + i.carbs, 0),
+    totalFat: items.reduce((sum, i) => sum + i.fat, 0),
+  };
 }
 
 export function formatMealTable(parsed: ParsedFood): string {

@@ -46,8 +46,8 @@ export async function completeOnboarding(telegramId: number, startDate: string):
     .where(eq(users.telegramId, telegramId));
 }
 
-export async function resetUserToDay1(userId: number): Promise<void> {
-  const today = new Date().toISOString().split('T')[0];
+export async function resetUserToDay1(userId: number, timezone: string = 'America/New_York'): Promise<void> {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
   await db
     .update(users)
     .set({
@@ -164,13 +164,37 @@ export async function getDayLog(userId: number, dayNumber: number): Promise<DayL
 
 export async function getOrCreateDayLog(userId: number, dayNumber: number, date: string): Promise<DayLog> {
   let log = await getDayLog(userId, dayNumber);
-  if (!log) {
+
+  console.log(`[STORAGE] getOrCreateDayLog: userId=${userId}, day=${dayNumber}, date=${date}, existing=${log ? `date=${log.date} (type=${typeof log.date})` : 'none'}`);
+
+  if (log && log.date !== date) {
+    // Stale day_log from a different date - reset it
+    console.log(`[STORAGE] Resetting stale day_log for day ${dayNumber} (was ${log.date}, now ${date})`);
+    const result = await db
+      .update(dayLogs)
+      .set({
+        date,
+        outdoorWorkout: null,
+        indoorWorkout: null,
+        reading: null,
+        water: null,
+        progressPic: null,
+        diet: null,
+        dietConfirmed: false,
+        meals: [],
+        completed: false,
+      })
+      .where(and(eq(dayLogs.userId, userId), eq(dayLogs.dayNumber, dayNumber)))
+      .returning();
+    log = result[0];
+  } else if (!log) {
     const result = await db
       .insert(dayLogs)
       .values({ userId, dayNumber, date, meals: [] })
       .returning();
     log = result[0];
   }
+
   return log;
 }
 
@@ -219,6 +243,7 @@ export async function addWater(userId: number, dayNumber: number, amountOz: numb
   const log = await getDayLog(userId, dayNumber);
   const currentAmount = log?.water?.amount_oz || 0;
   const newAmount = currentAmount + amountOz;
+  console.log(`[STORAGE] addWater: userId=${userId}, day=${dayNumber}, adding=${amountOz}, current=${currentAmount}, new=${newAmount}`);
   const isDone = newAmount >= waterTarget;
 
   const water: WaterLog = {
