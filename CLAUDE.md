@@ -32,6 +32,22 @@ ssh ben@89.167.72.227 "sudo journalctl -u 75-hard-bot -f"
 ssh ben@89.167.72.227 "sudo systemctl status 75-hard-bot"
 ```
 
+### Other Services on This VPS
+The same Hetzner CX23 (`89.167.72.227`) runs multiple services for Ben:
+
+| Service | systemd unit | Path | URL |
+|---------|-------------|------|-----|
+| **LifeOS API** | `lifeos-api` | `/home/ben/LifeOS/` | https://lifeos.benjaminmorrison.com |
+| **LifeOS Agent (Pete)** | `lifeos-agent` | `/home/ben/LifeOS/` | n/a (background agent) |
+| **75 Hard Bot** | `75-hard-bot` | `/home/ben/75-hard-bot/` | n/a (Telegram polling) |
+| **Ephemeria** | cron (`*/15 * * * *`) | `/home/ben/ephemeria/` | n/a (trading bot) |
+| **Vaultwarden** | Docker | `/opt/vaultwarden/` | https://vault.benjaminmorrison.com |
+
+**Reverse proxy**: Nginx + Certbot (Let's Encrypt) for HTTPS.
+**Security**: UFW (22/80/443), fail2ban, SSH key-only, root login disabled.
+
+**IMPORTANT**: LifeOS production is at https://lifeos.benjaminmorrison.com (NOT fly.io). The LifeOS repo has legacy fly.io config files that are not used.
+
 ## Tech Stack
 
 - **Runtime**: Node.js 18, TypeScript (compiled to `dist/`)
