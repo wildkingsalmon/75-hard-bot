@@ -41,7 +41,6 @@ The same Hetzner CX23 (`89.167.72.227`) runs multiple services for Ben:
 | **LifeOS Agent (Pete)** | `lifeos-agent` | `/home/ben/LifeOS/` | n/a (background agent) |
 | **75 Hard Bot** | `75-hard-bot` | `/home/ben/75-hard-bot/` | n/a (Telegram polling) |
 | **Ephemeria** | cron (`*/15 * * * *`) | `/home/ben/ephemeria/` | n/a (trading bot) |
-| **Vaultwarden** | Docker | `/opt/vaultwarden/` | https://vault.benjaminmorrison.com |
 
 **Reverse proxy**: Nginx + Certbot (Let's Encrypt) for HTTPS.
 **Security**: UFW (22/80/443), fail2ban, SSH key-only, root login disabled.
