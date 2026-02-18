@@ -336,14 +336,19 @@ type TextContext = Context<Update> & { message: Message.TextMessage };
 type PhotoContext = Context<Update> & { message: Message.PhotoMessage };
 
 // Get today's date in a specific timezone (returns YYYY-MM-DD)
-function getTodayInTimezone(timezone: string): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+// Shifted by -6 hours so midnight-5:59am counts as the previous day.
+// This prevents double-advancement: late-night messages stay on the current day,
+// and the day only advances at 6am.
+export function getTodayInTimezone(timezone: string): string {
+  const shifted = new Date(Date.now() - 6 * 60 * 60 * 1000);
+  return shifted.toLocaleDateString('en-CA', { timeZone: timezone });
 }
 
 // Calculate what day the user should be on based on their start date
-function calculateCurrentDay(startDate: string, timezone: string): number {
+export function calculateCurrentDay(startDate: string, timezone: string): number {
   const today = getTodayInTimezone(timezone);
-  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const startStr = startDate.substring(0, 10); // handle ISO format "2026-02-01T00:00:00.000Z"
+  const [sy, sm, sd] = startStr.split('-').map(Number);
   const [ty, tm, td] = today.split('-').map(Number);
   const start = new Date(sy, sm - 1, sd);
   const todayDate = new Date(ty, tm - 1, td);

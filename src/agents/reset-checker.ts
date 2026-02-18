@@ -1,8 +1,9 @@
 import { Telegraf } from 'telegraf';
 import * as storage from '../services/storage.js';
 import { getQuoteForDay } from '../data/goggins-quotes.js';
+import { calculateCurrentDay, getTodayInTimezone } from './chat-handler.js';
 
-// 6am: Start the new day - advance day counter, create dayLog, send morning message
+// 6am: Start the new day - calculate correct day from start_date, send morning message
 export async function morningRoutine(bot: Telegraf): Promise<void> {
   console.log('Running 6am morning routine...');
   const users = await storage.getAllActiveUsers();
@@ -15,9 +16,20 @@ export async function morningRoutine(bot: Telegraf): Promise<void> {
 
       // Only run at 6am
       if (currentHour !== 6) continue;
+      if (!user.startDate) continue;
 
       const program = await storage.getUserProgram(user.id);
       if (!program) continue;
+
+      // Calculate correct day from start_date (same logic as syncUserDay)
+      const expectedDay = calculateCurrentDay(user.startDate, user.timezone);
+      if (expectedDay <= 0 || expectedDay > 75) continue;
+
+      // Only proceed if the day actually changed
+      if (expectedDay === user.currentDay) {
+        console.log(`[MORNING] User ${user.telegramId} already on day ${expectedDay}, skipping`);
+        continue;
+      }
 
       // Check if previous day was complete
       const prevDayLog = await storage.getDayLog(user.id, user.currentDay);
@@ -25,13 +37,13 @@ export async function morningRoutine(bot: Telegraf): Promise<void> {
         ? storage.isDayComplete(prevDayLog, program.waterTarget || 128, program.dietMode || 'confirm', program.baseCalories || undefined).complete
         : false;
 
-      // Advance to new day
+      // Update to calculated day
       const prevDay = user.currentDay;
-      await storage.advanceUserDay(user.id);
-      const newDay = prevDay + 1;
+      await storage.updateUser(user.telegramId, { currentDay: expectedDay });
+      const newDay = expectedDay;
 
       // Create dayLog for the new day
-      const today = new Date().toLocaleDateString('en-CA', { timeZone: user.timezone });
+      const today = getTodayInTimezone(user.timezone);
       await storage.getOrCreateDayLog(user.id, newDay, today);
 
       // Get quote for the day
